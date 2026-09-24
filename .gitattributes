@@ -1,0 +1,11 @@
+# 这些文件会被**逐字节**复制给玩家（进发布包 / 进存档目录），所以禁止 git 做
+# 换行或编码转换 —— 一旦转成 CRLF，玩家拿到的字节就不是我们测试过的那一份了。
+# 末尾的 diff 属性保留文本形式的 diff，审阅时仍然看得懂。
+#
+# 特别提醒：
+#   *.ps1 必须带 UTF-8 BOM（PowerShell 5.1 按 GBK 读无 BOM 的脚本会解析失败）
+#   *.bat 必须纯 ASCII 且不带 BOM（cmd 按 OEM 代码页读 .bat，BOM 会被当命令执行）
+*.lua -text diff
+*.ps1 -text diff
+*.bat -text diff
+*.txt -text diff

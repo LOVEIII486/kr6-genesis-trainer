@@ -1,0 +1,13 @@
+# 开发笔记、逆向资料、历史报告
+docs/
+
+# 构建产物与本地缓存
+dist/
+_scratch/
+__pycache__/
+*.pyc
+*.love
+
+# 工具运行产生的临时文件
+*.pre-restore
+_kr6_slot_backup_*.lua
