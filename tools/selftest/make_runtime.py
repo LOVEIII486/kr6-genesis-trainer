@@ -11,6 +11,13 @@ import os
 import shutil
 import sys
 
+# Windows 控制台常是 cp936/cp1252；别让一次 print() 把整个脚本弄挂
+# （--help 里的中文就会）。其他脚本都有这一句，这里之前漏了。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, ROOT)

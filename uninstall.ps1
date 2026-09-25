@@ -28,8 +28,14 @@ $OurFiles = @(
 # 这些也匹配前缀，但**不删** —— 是用户自己的存档备份
 $KeepPrefixes = @('_kr6_slot_backup', '_kr6_global_backup')
 
-$save = if ($SaveDir) { $SaveDir } else { Join-Path $env:APPDATA $Identity }
-if (-not $env:APPDATA -and -not $SaveDir) { Fail '环境变量 APPDATA 不存在，请用 -SaveDir 指定目录' }
+# ⚠️ 判空必须在拼路径**之前**：Join-Path 对空值是抛异常，不是返回空。
+# 顺序写反的话，下面那句有用的提示永远轮不到。
+if (-not $SaveDir -and -not $env:APPDATA) {
+    Fail '环境变量 APPDATA 不存在，请用 -SaveDir 指定目录'
+}
+$save = if ($SaveDir) { $SaveDir } else { $env:APPDATA + '\' + $Identity }
+$save = $save.TrimEnd('\')
+# 这一句之后 $save 一定存在，所以下面用 Join-Path 是安全的
 if (-not (Test-Path $save)) { Fail "目录不存在：$save" }
 
 $victims = @()
@@ -58,10 +64,15 @@ foreach ($v in $victims) { Remove-Item -Recurse -Force $v }
 $allDir = Join-Path $save 'all'
 if ((Test-Path $allDir) -and -not (Get-ChildItem $allDir -Force)) { Remove-Item $allDir -Force }
 
-Say @"
+# 同上：游戏开着的时候删，已经跑着的进程里那份模组还在，得重启才彻底干净。
+$running = @(Get-Process -Name 'Kingdom Rush Genesis' -ErrorAction SilentlyContinue).Count -gt 0
 
-卸载完成，游戏回到原状。存档没被碰过。
-
-本安装包放在游戏目录里的这些文件可以自行删除（它们跟游戏本身无关）：
-  install.bat / uninstall.bat / install.ps1 / uninstall.ps1 / mod\ / 使用说明.txt
-"@
+Say ''
+Say '卸载完成，游戏回到原状。存档没被碰过。'
+if ($running) {
+    Say ''
+    Say '  ⚠ 游戏现在正开着 —— 重新启动一次才会彻底回到原状。'
+}
+Say ''
+Say '本安装包放在游戏目录里的这些文件可以自行删除（它们跟游戏本身无关）：'
+Say '  install.bat / uninstall.bat / install.ps1 / uninstall.ps1 / mod\ / 使用说明.txt'

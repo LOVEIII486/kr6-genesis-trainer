@@ -2,8 +2,7 @@
 """
 打包。默认出**玩家版**（只收玩家需要的文件，payload 里 DEV 关掉），--dev 出全源码快照。
 
-出的是两种完全不同的东西，早期版本把它们混了 —— 那个自称"发布版"的 zip 其实是
-含开发笔记和逆向报告的全源码快照。注意 `docs/` 不属于任何一种：它是本地资料，已被
+三种包是三种完全不同的东西，别混。`docs/` 不属于任何一种：它是本地资料，已被
 .gitignore 排除。
 
     python tools/make_dist.py                 # 玩家版 -> dist/kr6-trainer-v<N>.zip
@@ -22,14 +21,12 @@ sys.path.insert(0, HERE)
 
 from release_flags import FlagNotFound, release_flags  # noqa: E402
 
-# docs/ 一并排除：那是本地逆向资料（笔记 + 逆向工具），两种包都不该带。
-# 想备份 docs/ 请另行打包。
+# docs/ 一并排除：那是本地逆向资料（笔记 + 逆向工具），三种包都不该带。
 EXCLUDE_DIRS = {"_scratch", "__pycache__", ".git", "dist", "docs"}
 EXCLUDE_EXT = {".pyc", ".love"}
 PAYLOAD = "src/_kr6trainer.lua"
-# 玩家版要收的文件；其余都是开发资料。
-# kr6_slot_edit.py 必须有：根 README 让玩家用它改存档进度，
-# 因为游戏的存档层是异步文件 IO，游戏内做不到。
+# 玩家版**显式白名单**：必须逐个列出 —— 用排除法的话，新加的文件（尤其不发布的
+# src/_kr6trainer_lab.lua）会悄悄进包。kr6_slot_edit.py 也要收：游戏内改不了存档进度。
 PLAYER_FILES = [
     "README.md",
     "LICENSE",
@@ -40,9 +37,8 @@ PLAYER_FILES = [
     "tools/kr6_slot_edit.py",
 ]
 
-# 发行版：给不装 Python 的玩家。整包解压到游戏根目录，双击 install.bat。
-# 只带安装所需的东西 —— 不含 install.py / tools/（含离线存档编辑器）/ docs/ / 开发笔记。
-# mod\ 里那两个 lua 不是"要编译的源码"，它们就是模组本身，安装脚本原样复制进存档目录。
+# 发行版：给不装 Python 的玩家，只带安装所需的东西
+# （不含 install.py / tools/ / docs/）。解压到游戏根目录，双击 install.bat。
 RELEASE_ROOT_FILES = [
     "使用说明.txt",
     "LICENSE",
@@ -51,7 +47,8 @@ RELEASE_ROOT_FILES = [
     "install.ps1",
     "uninstall.ps1",
 ]
-# 发行版里 mod\ 的文件名 -> 仓库里的来源
+# 发行版里 mod\ 的文件名 -> 仓库里的来源。mod\ 里的 lua 不是"待编译的源码"，
+# 它们就是模组本身，安装脚本原样复制进存档目录。
 RELEASE_MOD_FILES = [
     ("mod/director.lua", "src/shadow_director.lua"),
 ]
@@ -93,7 +90,6 @@ def dev_build(z, n):
 
 
 def release_build(z, n):
-    """发行版：解压到游戏根目录，双击 install.bat，不需要 Python。"""
     for rel in RELEASE_ROOT_FILES:
         full = os.path.join(ROOT, rel)
         if not os.path.isfile(full):
@@ -106,7 +102,7 @@ def release_build(z, n):
             sys.exit("error: %s is missing" % src_rel)
         z.write(full, os.path.join("kr6-trainer", dest.replace("/", os.sep)))
         n += 1
-    # payload 要按发布版改写 DEV 开关，所以不能直接拷源文件
+    # payload 不能直接拷源文件：必须和 install.py 走同一条 release_flags 处理路径
     src = io.open(os.path.join(ROOT, PAYLOAD.replace("/", os.sep)), encoding="utf-8").read()
     try:
         out = release_flags(src)

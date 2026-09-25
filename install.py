@@ -12,8 +12,8 @@ kr6-trainer 安装器。
     python install.py --release         # 玩家版：去掉诊断工具
     python install.py --save-dir "C:\\tmp\\test"    # 测试用
 
-装完启动游戏，按 Home（**不是 F1** —— 这游戏没有也不该有 F 键热键，
-F1–F3 是玩家的物品键）。
+装完启动游戏，按 Home 打开菜单。**不是 F1** —— F1–F3 是玩家的物品键，
+这游戏不该有 F 键热键。
 """
 import argparse
 import os
@@ -27,8 +27,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 
 
 def _release_flags(src):
-    """把 DEV 开关改成 false。延迟导入，这样只带 install.py / uninstall.py / src/
-    的发布包里没有 tools/ 也能用。"""
+    """延迟导入 tools/ 里的 release_flags：只带 install.py / uninstall.py / src/
+    的发行包里没有 tools/ 也照样能用。"""
     sys.path.insert(0, os.path.join(HERE, "tools"))
     from release_flags import FlagNotFound, release_flags
     try:
@@ -37,7 +37,7 @@ def _release_flags(src):
         sys.exit("error: %s" % e)
 
 # 游戏 exe = love.exe 的字节 + 追加在后面的 .love zip。
-# 用中央目录结束记录（EOCD）定位 zip，所以不必知道 love.exe 那部分有多长。
+# 用 EOCD（中央目录结束记录）定位 zip，所以不必知道 love.exe 那部分有多长。
 EXE_NAME = "Kingdom Rush Genesis.exe"
 GAME_FOLDER = "Kingdom Rush Genesis"   # Steam 库里就是这个文件夹名
 TARGET_MODULE = "all/director.lua"          # the module we shadow
@@ -123,11 +123,8 @@ class FusedArchive:
 
 
 def _upward_from_here(levels=3):
-    """从脚本自己所在目录**逐级向上**找 exe。
-
-    为什么要向上找：发行包解压出来是 kr6-trainer\\ 一层子文件夹，所以脚本所在的
-    目录通常不是游戏根，而是它的下一层。只看本层的话这个快路径永远命中不了。
-    """
+    """从脚本自己所在目录逐级向上找 exe：发行包解压出来脚本在游戏根的下一层，
+    只看本层的话这个快路径永远命中不了。"""
     d = HERE
     for _ in range(levels):
         if os.path.isfile(os.path.join(d, EXE_NAME)):
@@ -140,9 +137,9 @@ def _upward_from_here(levels=3):
 
 
 def _steam_libraries():
-    """问注册表 + Steam 自己的库清单，拿这台机器上所有的 Steam 库根目录。
+    """问注册表 + Steam 的库清单，拿这台机器上所有的 Steam 库根目录。
 
-    比硬编码猜路径靠谱得多 —— 实测有玩家的库根是 D:\\GAME，那几个猜测一个都不匹配。
+    比硬编码猜路径靠谱：库根可以装在任意盘符。
     """
     libs = []
     try:
@@ -173,7 +170,7 @@ def find_game_dir(explicit):
         if not os.path.isfile(os.path.join(explicit, EXE_NAME)):
             sys.exit("error: %s not found in %s" % (EXE_NAME, explicit))
         return explicit
-    # 1) 从脚本所在目录向上找（发行包解压成子文件夹时最常命中，也最快）
+    # 1) 从脚本所在目录向上找（发行包解压成子文件夹时最常命中）
     up = _upward_from_here()
     if up:
         return up
@@ -184,7 +181,7 @@ def find_game_dir(explicit):
     for d in cands:
         if os.path.isfile(os.path.join(d, EXE_NAME)):
             return d
-    # 3) 最后的兜底：在各盘根目录下浅扫几层找 exe（慢，但装在哪都能翻出来）
+    # 3) 兜底：各盘根目录浅扫几层找 exe（慢，但装在哪都能翻出来）
     for drive in ("C:\\", "D:\\", "E:\\", "F:\\"):
         for root, dirs, files in os.walk(drive):
             if root.count(os.sep) > 4:

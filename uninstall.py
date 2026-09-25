@@ -17,7 +17,6 @@ import sys
 
 DEFAULT_IDENTITY = "kingdom_rush_genesis"
 
-# 自己的文件（相对存档目录）
 OUR_FILES = [
     "all/director.lua",
     "_kr6trainer.lua",
@@ -37,15 +36,13 @@ OUR_FILES = [
     "_kr6_fatal.txt",
     "_kr6_err.txt",
 ]
-# 自己的整个目录
 OUR_DIRS = ["_orig"]
 # 可以放心清扫的前缀（报告、诊断文件等）
 OUR_PREFIXES = ("_kr6_", "_probe_")
-# 例外：这些也匹配上面的前缀，但它们是**用户数据**不是垃圾 ——
-# 是编辑器改动存档前的备份，而卸载恰恰是最需要它的时刻。
+# 例外：这些匹配上面的前缀但属于**用户数据** —— 是编辑器改存档前的备份，
+# 卸载恰恰是最需要它的时刻，绝不能当垃圾删掉。
 KEEP_PREFIXES = ("_kr6_slot_backup", "_kr6_global_backup")
 
-# 无论如何都不删
 PROTECTED = ("cache.lua", "global.lua", "settings.lua", "steam_autocloud.vdf")
 
 

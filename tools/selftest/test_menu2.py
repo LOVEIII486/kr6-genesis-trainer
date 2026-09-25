@@ -40,8 +40,7 @@ def check(cond, label, detail=""):
 def build_harness(release=False):
     """把 src/ 镜像到假存档目录，再生成驱动用的 .love。
 
-    存档目录里的文件优先于游戏本体，所以 payload 会从这里被读出来。
-    """
+    存档目录里的文件优先于游戏本体，所以 payload 会从这里被读出来。"""
     shutil.rmtree(MIRROR, ignore_errors=True)
     os.makedirs(os.path.join(MIRROR, "all"), exist_ok=True)
     os.makedirs(os.path.join(MIRROR, "_orig"), exist_ok=True)
@@ -70,12 +69,9 @@ def build_harness(release=False):
     w('                  gems_per_wave = 5, level_name = ' + Q + 'level05' + Q +
       ', force_next_wave = false,')
     # ★ 故意做成**稀疏**表：没有 [1]，只有 [2] 和 [7]。实机上的 store.entities 就长这样
-    #   （下标从 2 起、中间有洞、最大下标到过 602）。用 `for i = 1, #s.entities` 遍历的话
-    #   Lua 的 # 因为 t[1] == nil 直接返回 0 —— 循环一次都不进，免费造塔/场上单位倍率/
-    #   秒杀**全部静默失效**。这条数据就是那个 bug 的回归哨兵。
+    #   （下标从 2 起、中间有洞）。别改成连续表 —— 这份数据是那条 bug 的回归哨兵。
     w('                  entities = {')
-    # health 同时给 hp（当前）和 hp_max（上限）—— 实机就是这样，而只缩上限是没用的：
-    # 当前血量不变，敌人照样按原来的血量死掉。
+    # health 必须同时给 hp 和 hp_max：只缩上限没用（当前血量不变，敌人照样按原血量死掉）。
     w('                    [2] = { id = 2, health = { hp_max = 200, hp = 200 },')
     w('                            motion = { max_speed = 40 } },')
     # [7] 故意不连续，用来证明遍历真的走的是 pairs 而不是 1..#
@@ -110,8 +106,8 @@ def build_harness(release=False):
     w('    S.sel = i')
     w('    return i')
     w('  end')
-    # 按「第 n 个可执行条目」取 id，跳过分组标题。
-    # 这样断言布局约定时不必关心菜单里插了几个标题 —— 加分组不会碰坏它。
+    # 按「第 n 个可执行条目」取 id，跳过分组标题 —— 这样断言布局约定时
+    # 不必关心菜单里插了几个标题，加分组不会碰坏它。
     w('  local function nth_action(n)')
     w('    local c = 0')
     w('    for _, it in ipairs(S.items or {}) do')
@@ -122,9 +118,8 @@ def build_harness(release=False):
     w('    end')
     w('    return nil')
     w('  end')
-    # 功能键必须什么都不做（误触问题就是它们带来的）。整排 F1–F12 都要试 ——
-    # 游戏的调试键（F5/F8/F9/F10/F12）也在这一段，将来谁想「顺手点亮 DEBUG_KEYS_ON
-    # 用 F 键」会立刻撞上这条；而 F1–F3 是玩家的物品热键，撞不得。
+    # 整排 F1–F12 都必须什么都不做：F1–F3 是玩家的物品热键，游戏的调试键
+    # （F5/F8/F9/F10/F12）也在这段 —— 谁想用 F 键当菜单键都会先撞上这条。
     fkeys = (', ').join(Q + ('f%d' % i) + Q for i in range(1, 13))
     w('  -- 功能键必须什么都不做（误触问题就是它们带来的）')
     w('  for _, fk in ipairs({ ' + fkeys + ' }) do key(fk) end')
@@ -139,8 +134,7 @@ def build_harness(release=False):
     w('  say(' + Q + 'item1_id' + Q + ', nth_action(1))')
     w('  say(' + Q + 'item2_id' + Q + ', nth_action(2))')
     w('  say(' + Q + 'item_count' + Q + ', S.items and #S.items or -1)')
-    # 分组标题必须真的存在（否则下面「↓ 不会停在标题上」的断言会因为
-    # 菜单里根本没有标题而空转）
+    # 分组标题必须真的存在，否则下面「↓ 不会停在标题上」的断言会空转
     w('  local hdr = 0')
     w('  for _, it in ipairs(S.items or {}) do if it.header then hdr = hdr + 1 end end')
     w('  say(' + Q + 'header_count' + Q + ', hdr)')
@@ -163,9 +157,8 @@ def build_harness(release=False):
     w('  say(' + Q + 'gold_after_hold' + Q + ', store.player_gold)')
     w('  pick(' + Q + 'hold' + Q + ') key(' + Q + 'return' + Q + ')      -- 关掉')
     # ---- 每个菜单项都必须有可用标签（标签为 nil 会让整个面板静默消失）
-    # 标签 == id 正是 menu_items() 里 L(id) 回退的特征：说明 MENU_TEXT 里漏了
-    # 这条文案（cn 或 en 任意一边）。以前只查「非空字符串」永远为真 ——
-    # 回退出来的是 id，也是非空字符串，等于没测。
+    # 标签 == id 是 menu_items() 里 L(id) 回退的特征（MENU_TEXT 漏了这条文案，cn/en 任一边），
+    # 所以只能这么查：光查「非空字符串」永远为真，等于没测。
     w('  local bad = {}')
     w('  for i, it in ipairs(S.items or {}) do')
     w('    if type(it.label) ~= ' + Q + 'string' + Q + ' or it.label == ' + Q + '' + Q +
@@ -201,7 +194,7 @@ def build_harness(release=False):
     w('  say(' + Q + 'mult_after_left' + Q + ', S.mult.enemy_hp)')
     w('  pcall(fake.update)')
     # 调回 x1 后必须**再跑一趟收尾重放**才停手：守卫条件此刻已经变假，
-    # 不补跑的话模板会永远停在放大后的值上。这条断言就是钉这个状态机的。
+    # 不补跑的话模板会永远停在放大后的值上。
     w('  say(' + Q + 'mult_active_after_reset' + Q + ', S.mult_active)')
     # 下调到下限要停住，且**不能**返回 FAIL（冒烟测试把 FAIL 当失败）。
     # enemy_hp 的下限是 0.1（不是 1），所以先摆到下限再按左键。
@@ -210,8 +203,7 @@ def build_harness(release=False):
     w('  say(' + Q + 'mult_at_floor' + Q + ', S.mult.enemy_hp)')
     w('  say(' + Q + 'last_err' + Q + ', S.last_err)')
     # ---- 存档改写逻辑（S.slot_apply / S.slot_like 是刻意暴露给测试的）。
-    # 这是**会动玩家存档**的部分，必须单独测 —— 测试环境没有 storage 模块，
-    # 钩子装不上，所以直接调这两个函数。
+    # 测试环境没有 storage 模块、钩子装不上，所以直接调这两个函数。
     w('  local function mk_slot()')
     w('    return { gems = 100, last_stars = 0,')
     w('             levels = { [1] = { stars = 2 }, [2] = { stars = 1 } },')
@@ -255,10 +247,8 @@ def build_harness(release=False):
     w('    not has_val(t3.upgrades_trees.hero_x, ' + Q + 'l1' + Q + ') and')
     w('    has_val(t3.upgrades_trees.hero_x, ' + Q + 'skill_b' + Q + '))')
 
-    # ---- 稀疏 entities 的回归：**store.entities 是稀疏表**（实机下标从 2 起、
-    # 中间有洞），用 `for i = 1, #s.entities` 的话 # 返回 0、循环一次都不进 ——
-    # 场上单位倍率会整个静默失效。假 store 里故意只放 [2] 和 [7]，没有 [1]。
-    # 这一条同时覆盖「够得到实体」和「血量成对缩放（只缩上限等于没缩）」。
+    # ---- 稀疏 entities 的回归：假 store 故意只放 [2] 和 [7]、没有 [1] —— 遍历写成
+    # `for i = 1, #s.entities` 会一次都不进（# 返回 0），倍率整个静默失效。
     w('  S.mult.enemy_hp = 5')
     w('  pcall(fake.update)')
     w('  say(' + Q + 'hp_max_after' + Q + ', store.entities[2].health.hp_max)')
@@ -274,8 +264,7 @@ def build_harness(release=False):
     w('  pcall(fake.update)')
     w('  say(' + Q + 'hp_max_back' + Q + ', store.entities[2].health.hp_max)')
     # ---- 冒烟测试：把每个动作都从命令通道跑一遍。
-    # 这条专门抓「调用了声明在它上面的函数」—— 名字会静默解析成 nil 全局，
-    # 而且只有那一个动作挂掉，snap/diff/report/api 当初就是这么坏的。
+    # 专门抓「调用了声明在它上面的函数」—— 名字会静默解析成 nil 全局，只有那一个动作挂掉。
     w('  local smoke = {}')
     w('  for _, it in ipairs(S.items or {}) do')
     # 跳过两类：tweak「按设计必须有参数，不给参数必然失败」；分组标题
@@ -290,9 +279,8 @@ def build_harness(release=False):
     w('  end')
     w('  say(' + Q + 'smoke_failures' + Q + ', table.concat(smoke, ' + Q + ' ;; ' + Q + '))')
     w('  say(' + Q + 'smoke_ran' + Q + ', #(S.items or {}))')
-    # 全部条目 id（含标题）。开发版/发布版的门控靠它做集合断言，
-    # 而不是原来那种「项数必须等于 15/8」的硬编码 —— 后者每加一个菜单项
-    # 就得手改一次，而且它想测的东西（诊断项有没有漏进发布版）本来就有更好的写法。
+    # 全部条目 id（含标题）。门控靠它做集合断言，别写回「项数必须等于 N」的硬编码 ——
+    # 那样每加一个菜单项就得手改一次。
     w('  local ids = {}')
     w('  for _, it in ipairs(S.items or {}) do ids[#ids+1] = tostring(it.id) end')
     w('  say(' + Q + 'all_item_ids' + Q + ', table.concat(ids, ' + Q + ',' + Q + '))')
@@ -326,8 +314,8 @@ def build_harness(release=False):
     w('  love.graphics.setColor(235, 235, 235)')
     w('  love.graphics.print(' + Q + 'SELFTEST fake game screen' + Q + ', 20, 30)')
     w('  if fake then pcall(fake.draw) end      -- 游戏先画，director.draw 后画')
-    # 截图**在测试台这边做**，不在 payload 里 —— 截屏是开发期的诊断，
-    # 精简版不该为了它多带一段代码。这一趟是最后一帧，菜单已经画好了。
+    # 截图**在测试台这边做**，不在 payload 里 —— 截屏是开发期诊断，
+    # 精简版不该为它多带一段代码。这一趟是最后一帧，菜单已经画好了。
     w('  if frames > 25 and not shot_done then')
     w('    shot_done = true')
     w('    pcall(function()')
@@ -370,17 +358,15 @@ def run_and_read():
 
 
 def check_slim_payload():
-    """精简版的硬约束：**一个诊断项都不许有**，而且构建链不能再依赖已删掉的开关。
+    """精简版的硬约束：**一个诊断项都不许有**，构建链也不该再依赖已删掉的 DEV 开关。
 
-    以前这里测的是 `release_flags()` 有没有把 DEV 改成 false。现在没有 DEV 了
-    （诊断项整个删掉了，两种版本完全一样），所以改成直接检查源码：
-    不该再出现任何开关、也不该再出现那批诊断动作 id。
+    直接检查源码：既不该出现开关，也不该出现那批诊断动作 id。
     """
     src = io.open(os.path.join(ROOT, "src", "_kr6trainer.lua"), encoding="utf-8").read()
     check("local DEV = " not in src, "精简版里没有 DEV 开关")
     check("AUTO_REPORT" not in src, "精简版里没有自动报告开关")
-    # 用函数名/动作 id 而不是裸词 —— 注释里提一句「字段名是探针跑出来的」
-    # 是合理的，不该被当成"精简版里还有 probe"。
+    # 只查函数名/动作 id，不查裸词 —— 注释里提一句「探针」是合理的，
+    # 不该被当成"精简版里还有 probe"。
     for gone in ("probe_dump", '"probe"', "api_sweep", "dump_store", "kill_all",
                  "free_towers", "all_towers", "hide_ui", "tower_dmg",
                  "gems_add", "unlock_all"):
@@ -475,9 +461,7 @@ def main():
           "val=" + kv.get("mult_active_after_reset", "?"))
     check(kv.get("mult_at_floor") == "0.1", "倍率到下限（0.1）就停住，不越界",
           "val=" + kv.get("mult_at_floor", "?"))
-    # 回归：**store.entities 是稀疏表**（实机下标从 2 起、中间有洞、最大到过 602）。
-    # 用 `for i = 1, #s.entities` 的话 Lua 的 # 因为 t[1] == nil 直接返回 0，
-    # 循环一次都不进 —— 场上单位倍率会整个静默失效。假 store 里故意只放 [2] 和 [7]。
+    # 回归：**store.entities 是稀疏表**，必须用 pairs 而不是 1..#（细节见上面的假 store）。
     check(kv.get("hp_max_after") == "1000", "敌人血量倍率够得到稀疏实体表（不是 1..#）",
           "hp_max=" + kv.get("hp_max_after", "?"))
     check(kv.get("hp_after") == "1000", "血量成对缩放：当前血量也缩了（只缩上限等于没缩）",
@@ -522,7 +506,7 @@ def main():
     check(kv.get("rect_mismatch") == "", "每个条目（含标题）都有命中框，标题带标记",
           kv.get("rect_mismatch", "?"))
     ids = kv.get("all_item_ids", "").split(",")
-    # 精简版**应该**有的（就是 V1 那批 + 敌人血量/移速 + 星星/升级树）
+    # 精简版**应该**有的（金币/生命/无限金钱 + 敌人血量/移速 + 星星/升级树）
     for want in ("gold_add", "gold_sub", "lives_add", "lives_sub", "hold",
                  "hold_lives", "next_wave", "enemy_hp", "enemy_speed",
                  "stars_max", "unlock_tree", "close"):

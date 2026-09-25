@@ -8,7 +8,7 @@ Kingdom Rush Genesis 的游戏内修改器 + 离线存档编辑器。
 
 **[→ 点这里下载最新版本](https://github.com/LOVEIII486/kr6-genesis-trainer/releases/latest)**
 
-下载 `kr6-trainer-v1-release.zip` 那个（推荐，不需要 Python）。装法见下面「安装」。
+下载 `kr6-trainer-v2-release.zip` 那个（推荐，不需要 Python）。装法见下面「安装」。
 
 ## 环境需求
 
@@ -29,9 +29,12 @@ Kingdom Rush Genesis 的游戏内修改器 + 离线存档编辑器。
 
 ### 方式一：双击安装（推荐，不需要 Python）
 
-下载 **`kr6-trainer-v1-release.zip`**，把整个文件夹解压到**游戏安装目录**
+下载 **`kr6-trainer-v2-release.zip`**，解压到**游戏安装目录**
 （和 `Kingdom Rush Genesis.exe` 同一层），然后**双击 `install.bat`**。
 卸载是双击 `uninstall.bat`。
+
+> 解压时**整个 `kr6-trainer` 文件夹扔进游戏目录**、或者**只把里面的文件倒进去**都行 ——
+> 安装脚本会从自己所在的位置逐级向上找游戏主程序，两种放法都认。
 
 ```
 kr6-trainer\

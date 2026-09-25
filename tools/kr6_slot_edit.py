@@ -33,10 +33,9 @@ DEFAULT_IDENTITY = "kingdom_rush_genesis"
 EXE = "Kingdom Rush Genesis.exe"
 BACKUP_PREFIX = "_kr6_slot_backup_"
 
-# ---------------------------------------------------------------- Lua 表子集
-# 存档就是一个 Lua 表字面量：local obj1 = {...}; return obj1
-# 键只有 ["名字"] 或 [数字]，值只有数字/字符串/布尔/嵌套表，没有函数调用和表达式，
-# 所以一个极小的解析器就能精确解析。
+# ---- Lua 表子集
+# 存档就是一个 Lua 表字面量（local obj1 = {...}; return obj1）：键只有 ["名字"] 或
+# [数字]，值只有数字/字符串/布尔/嵌套表，所以一个极小的解析器就能精确解析。
 
 KEYWORDS = {"and", "break", "do", "else", "elseif", "end", "false", "for",
             "function", "if", "in", "local", "nil", "not", "or", "repeat",
@@ -185,7 +184,7 @@ def render(var, obj):
 def ser(v, indent):
     pad = "\t" * indent
     if isinstance(v, dict):
-        # 空表也不特例化：游戏自己的序列化器在那里也写 "{\n<制表符>}"，
+        # 空表不特例化：游戏自己的序列化器也写 "{\n<制表符>}"，
         # 而往返检查要求逐字节一致。
         out = ["{"]
         for k, val in v.items():
@@ -215,7 +214,7 @@ def ske(k):
     raise LuaError("bad key type %s" % type(k).__name__)
 
 
-# -------------------------------------------------------------------- 辅助
+# ---- 辅助
 
 def default_slot_path(identity):
     appdata = os.environ.get("APPDATA")
@@ -262,8 +261,7 @@ def stars_total(slot):
                if isinstance(e, dict) and isinstance(e.get("stars"), int))
 
 
-# Lua 数组解析出来是「以 1..n 为键的 dict」（文件里写的是 [1] = ...），
-# 用不了 list 的操作。下面这几个是需要的。
+# Lua 数组解析出来是以 1..n 为键的 dict（文件里写 [1] = ...），用不了 list 的操作。
 def lua_array(d):
     if not isinstance(d, dict):
         return []
@@ -288,9 +286,7 @@ def show_list(d):
     return "{%s}" % ", ".join(repr(x) for x in lua_array(d))
 
 
-# 星星奖励轨道，来自 kr6-desktop/data/map_data.lua 的 progression_rewards_premium。
-# 三处独立来源吻合：从字节码解出、游戏运行时读出（_kr6_save.txt 列出全部 32 条）、
-# 以及真实存档反推 —— 11 星时轨道给出的内容正好就是那份存档已解锁的东西。
+# 星星奖励轨道，取自 kr6-desktop/data/map_data.lua 的 progression_rewards_premium。
 REWARD_TRACK = [
     (1, "hero_zefira"), (3, "tower_wizard"), (5, "power_royal_edict"),
     (7, "tower_culverine"), (11, "hero_bolin"), (14, "tower_ranger"),
@@ -305,8 +301,8 @@ REWARD_TRACK = [
     (80, "hero_drakkan"), (84, "hero_ashbite"),
 ]
 
-# 存档里的升级树节点是**短 id**（l1、skill_a），而 kr6/upgrades.lua 里是**带前缀的**
-# （archers_l1）。两个命名空间绝不能混用 —— 只能沿用该树里已有的风格去补。
+# 存档里的升级树节点是**短 id**（l1、skill_a），kr6/upgrades.lua 里是**带前缀的**
+# （archers_l1）：两个命名空间绝不能混用，只能沿用该树里已有的风格去补。
 TOWER_NODES = ["l1", "l2", "l3a", "l3b", "l4a", "l4b", "ulti"]
 HERO_NODES = ["skill_a", "skill_b", "skill_c", "talent_1", "talent_2",
               "upg_a", "upg_b", "ultimate"]
@@ -327,7 +323,7 @@ def fill_tree(arr):
     return len(added)
 
 
-# ------------------------------------------------------------------ commands
+# ---- commands
 
 def cmd_show(slot):
     print("gems            : %s" % slot.get("gems"))
@@ -569,8 +565,7 @@ def main():
         print("total %d stars to unlock everything" % REWARD_TRACK[-1][0])
         return 0
 
-    # 只有会写文件的命令需要游戏关闭：游戏存档时重写整个文件，
-    # 运行时改的直接作废。
+    # 只有会写文件的命令需要游戏关闭：游戏存档时会重写整个文件，运行时改的直接作废。
     running = game_is_running()
     if running and not a.force and not a.dry_run:
         sys.exit("refusing to write: %s is running, and the game rewrites this file\n"

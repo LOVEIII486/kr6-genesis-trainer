@@ -28,9 +28,7 @@ function Say($msg)  { Write-Host $msg }
 function Fail($msg) { Write-Host "错误：$msg" -ForegroundColor Red; exit 1 }
 
 # 问注册表 + Steam 自己的库清单，拿到这台机器上所有的 Steam 库根目录。
-# 为什么要这个：原来那份候选路径是**硬编码猜的**（C:\Program Files (x86)\Steam…、
-# D:\Steam…、E:\Steam…），只能覆盖最常见的几种装法。实测有玩家的库根是 D:\GAME，
-# 一个都匹配不上 —— 猜路径这条路本来就不该是主力。
+# 硬编码猜路径覆盖不全（有玩家的库根是 D:\GAME），只能当兜底。
 function Get-SteamLibraries {
     $out = @()
     try {
@@ -148,12 +146,8 @@ function Write-File([string]$path, [byte[]]$bytes) {
 # 优先用脚本自己所在的位置推游戏目录
 $game = $GameDir
 if (-not $game) {
-    # 从脚本所在目录**逐级向上**找 exe。
-    #
-    # 为什么要向上找：发行包解压出来是 kr6-trainer\ 这么一层子文件夹，所以脚本
-    # 所在的目录通常**不是**游戏根，而是它的下一层。老版本只测了 $Here 本层
-    # （Test-Path (Join-Path $Here $ExeName)），于是这个快路径永远命中不了 ——
-    # 只能掉到下面那串硬编码的猜测路径去。这是玩家装不上的真原因。
+    # 从脚本所在目录**逐级向上**找 exe：发行包解压出来是 kr6-trainer\ 一层子文件夹，
+    # 所以脚本所在目录通常不是游戏根，而是它的下一层。只看本层会永远命中不了。
     $probe = $Here
     for ($up = 0; $up -lt 3 -and $probe; $up++) {
         if (Test-Path ($probe.TrimEnd('\') + '\' + $ExeName)) { $game = $probe; break }
@@ -177,23 +171,27 @@ if (-not $game) {
         'E:\Steam\steamapps\common\' + $GameName
     )
     foreach ($d in $cands) {
-        # 这里用字符串拼接而**不是** Join-Path：Join-Path 会通过 FileSystem
-        # provider 解析盘符，玩家机器上不存在的盘（比如没有 E 盘）会抛
-        # DriveNotFoundException 把整个脚本打死 —— 而这一段本来只是"试着找找看"，
-        # 找不到就该跳过。Test-Path 对不存在的盘只返回 False，不抛。
+        # 用字符串拼接而**不是** Join-Path：Join-Path 会解析盘符，玩家机器上
+        # 不存在的盘会抛 DriveNotFoundException；Test-Path 对不存在的盘只返回 False。
         if (Test-Path ($d.TrimEnd('\') + '\' + $ExeName)) { $game = $d; break }
     }
 }
 if (-not $game) {
     Fail "找不到 $ExeName。`n请把压缩包里的文件解压到游戏根目录（和 exe 放一起），或用 -GameDir 指定。"
 }
-# 同样不用 Join-Path：$GameDir 是玩家给的，盘符可能根本不存在，
-# Join-Path 会在这里抛出一个对玩家毫无意义的异常。
+# 同上：$GameDir 是玩家给的，盘符可能不存在，用 Join-Path 会抛异常。
 $exe = $game.TrimEnd('\') + '\' + $ExeName
 if (-not (Test-Path $exe)) { Fail "$ExeName 不在 $game 里" }
 
-$save = if ($SaveDir) { $SaveDir } else { Join-Path $env:APPDATA $Identity }
-if (-not $env:APPDATA -and -not $SaveDir) { Fail '环境变量 APPDATA 不存在，请用 -SaveDir 指定目录' }
+# ⚠️ 判空必须在**拼路径之前**：Join-Path 对空值是抛异常，不是返回空。
+# 顺序写反的话，下面那句有用的提示永远轮不到，玩家只会看到一段天书。
+if (-not $SaveDir -and -not $env:APPDATA) {
+    Fail '环境变量 APPDATA 不存在，请用 -SaveDir 指定目录'
+}
+# 用字符串拼接而不是 Join-Path：-SaveDir 是玩家给的，盘符可能根本不存在，
+# Join-Path 会解析盘符并抛出 DriveNotFoundException。
+$save = if ($SaveDir) { $SaveDir } else { $env:APPDATA + '\' + $Identity }
+$save = $save.TrimEnd('\')
 
 $payloadSrc = Join-Path $Here 'mod\_kr6trainer.lua'
 $shadowSrc  = Join-Path $Here 'mod\director.lua'
@@ -214,10 +212,12 @@ Say "  取出成功：$($blob.Length) 字节"
 $payload = [IO.File]::ReadAllBytes($payloadSrc)
 $shadow  = [IO.File]::ReadAllBytes($shadowSrc)
 
+# ⚠️ **顺序别调换**：覆盖桩必须**最后**写。它会让游戏去加载另外两份，先写它而
+# 中途失败的话，游戏下次启动就是「装了但什么都没发生」；这个顺序只会留下无用文件。
 $plan = @(
-    @{ path = (Join-Path $save 'all\director.lua');        bytes = $shadow },
-    @{ path = (Join-Path $save '_orig\all_director.luac'); bytes = $blob },
-    @{ path = (Join-Path $save '_kr6trainer.lua');         bytes = $payload }
+    @{ path = ($save + '\_orig\all_director.luac'); bytes = $blob },
+    @{ path = ($save + '\_kr6trainer.lua');         bytes = $payload },
+    @{ path = ($save + '\all\director.lua');        bytes = $shadow }
 )
 
 Say ''
@@ -229,15 +229,22 @@ if ($DryRun) { Say "`n（-DryRun：什么都没写）"; exit 0 }
 
 foreach ($item in $plan) { Write-File $item.path $item.bytes }
 
-Say @"
+# 游戏**正在跑**的时候装：文件能写进去，但那个进程在启动时就已经把旧版本读进内存了，
+# 不会重新读 —— 玩家会看到「装了但什么都没发生」。这个坑真的踩过（自己也踩过），
+# 所以这里明确说一句，而不是让玩家去猜。
+$running = @(Get-Process -Name ($ExeName -replace '\.exe$', '') -ErrorAction SilentlyContinue).Count -gt 0
 
-安装完成。
-
-  1. 启动游戏
-  2. 游戏里按 Home 键开关修改器菜单
-     ↑↓ 选择   ←→ 调整   Enter 执行   Esc 关闭（鼠标点击也行）
-
-卸载：双击 uninstall.bat
-
-提醒：改存档进度的功能会写你的存档，用之前请先备份存档目录。
-"@
+Say ''
+Say '安装完成。'
+Say ''
+if ($running) {
+    Say '  ⚠ 游戏现在正开着 —— 请**先退出游戏再重新启动**，否则刚才装的不会生效。'
+    Say ''
+}
+Say '  1. 启动游戏'
+Say '  2. 游戏里按 Home 键开关修改器菜单'
+Say '     ↑↓ 选择   ←→ 调整   Enter 执行   Esc 关闭（鼠标点击也行）'
+Say ''
+Say '卸载：双击 uninstall.bat'
+Say ''
+Say '提醒：改存档进度的功能会写你的存档，用之前请先备份存档目录。'

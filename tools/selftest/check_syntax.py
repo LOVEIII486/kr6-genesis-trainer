@@ -22,9 +22,8 @@ Q = chr(34)
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 RT = os.path.join(ROOT, "_scratch", "rt")
-# _kr6trainer_lab.lua 是功能全开那一版的**冻结快照**，不发布、不部署，
-# 但仍要能 loadstring —— 它躺在 src/ 里是给人回头继续开发的，
-# 语法烂掉就白留了。这一条几乎零成本（同一趟运行时顺便编译）。
+# _kr6trainer_lab.lua 不发布不部署，但留着是给人回头继续开发的：
+# 同一趟运行时顺便编译一遍几乎零成本，而语法烂掉就白留了。
 SOURCES = ["src/_kr6trainer.lua", "src/shadow_director.lua", "src/_kr6trainer_lab.lua"]
 
 
@@ -44,8 +43,8 @@ def main():
     syn = os.path.join(RT, "syn")
     os.makedirs(syn, exist_ok=True)
 
-    # 把源码作为 Lua 长字符串嵌进去而不是当文件附带：
-    # 这样测试台不依赖 love.filesystem 的存档目录查找路径。
+    # 源码作为 Lua 长字符串嵌进去，不当文件附带：这样测试台不依赖
+    # love.filesystem 的存档目录查找路径。
     L = ["local SRC = {}"]
     for i, rel in enumerate(SOURCES):
         txt = io.open(os.path.join(ROOT, rel), encoding="utf-8").read()
