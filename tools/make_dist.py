@@ -75,8 +75,10 @@ def release_build(z, n):
             sys.exit("error: %s is missing" % src_rel)
         z.write(full, os.path.join("kr6-trainer", dest.replace("/", os.sep)))
         n += 1
-    # payload 不能直接拷源文件：必须和 install.py 走同一条 release_flags 处理路径
-    src = io.open(os.path.join(ROOT, PAYLOAD.replace("/", os.sep)), encoding="utf-8").read()
+    # payload 不能直接拷源文件：必须和 install.py 走同一条 release_flags 处理路径。
+    # ⚠️ 二进制读：文本模式会把 CRLF 翻成 LF，包里的 payload 就和仓库里/测试过的**不是同一
+    # 份字节**（指纹对不上，排查「装的是哪版」时白绕一圈）。release_flags 只用它做字符串处理。
+    src = io.open(os.path.join(ROOT, PAYLOAD.replace("/", os.sep)), "rb").read().decode("utf-8")
     try:
         out = release_flags(src)
     except FlagNotFound as e:
@@ -88,7 +90,7 @@ def release_build(z, n):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    ap.add_argument("--version", default="4", help="发版号（**发新版时记得改这里**，"
+    ap.add_argument("--version", default="5", help="发版号（**发新版时记得改这里**，"
                     "否则会静默覆盖上一版的同名文件）")
     ap.add_argument("--dev", action="store_true",
                     help="full source snapshot instead of the release build")

@@ -22,6 +22,8 @@ except Exception:
 
 NL = chr(10)
 Q = chr(34)
+# 整排功能键：一个都不能当热键（F1–F3 是玩家的物品热键）。
+FKEYS = tuple("f%d" % i for i in range(1, 13))
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 RT = os.path.join(ROOT, "_scratch", "rt")
@@ -65,6 +67,9 @@ def build_harness(release=False):
     w('end')
     w('local function say(k, v) log[#log+1] = k .. ' + Q + '=' + Q + ' .. tostring(v) end')
     w('function love.load()')
+    # 整段测试台包在 xpcall 里：报错时**落进日志**（否则 LÖVE 弹错误屏、进程不退，
+    # 测试只会在 60 秒超时后死掉，什么线索都不给）。
+    w('  local ok, err = xpcall(function()')
     w('  local store = { player_gold = 700, lives = 30, gems_collected = 3,')
     w('                  gems_per_wave = 5, level_name = ' + Q + 'level05' + Q +
       ', force_next_wave = false,')
@@ -118,16 +123,29 @@ def build_harness(release=False):
     w('    end')
     w('    return nil')
     w('  end')
-    # 整排 F1–F12 都必须什么都不做：F1–F3 是玩家的物品热键，游戏的调试键
-    # （F5/F8/F9/F10/F12）也在这段 —— 谁想用 F 键当菜单键都会先撞上这条。
-    fkeys = (', ').join(Q + ('f%d' % i) + Q for i in range(1, 13))
-    w('  -- 功能键必须什么都不做（误触问题就是它们带来的）')
-    w('  for _, fk in ipairs({ ' + fkeys + ' }) do key(fk) end')
+    # 整排 F1–F12 都必须什么都不做、且原样透传：F1–F3 是玩家的物品热键（游戏
+    # all/constants.lua 的 key_item_1/2/3），游戏的调试键（F5/F8/F9/F10/F12）也在这段
+    # —— 谁想拿 F 键当菜单键都会先撞上这条。菜单键只能用 Home / Tab。
+    w('  local kc_f = fake.calls.keypressed')
+    w('  for _, fk in ipairs({ ' + (', ').join(Q + k + Q for k in FKEYS) + ' }) do key(fk) end')
     w('  say(' + Q + 'menu_after_fkeys' + Q + ', S.menu_open)')
-    w('  say(' + Q + 'passthrough_after_fkeys' + Q + ', fake.calls.keypressed)')
+    # 差值，不是绝对次数：这 12 个键必须一个不漏地透传给游戏。
+    w('  say(' + Q + 'passthrough_after_fkeys' + Q + ', fake.calls.keypressed - kc_f)')
+    w('  local kc0 = fake.calls.keypressed')
     w('  key(' + Q + 'home' + Q + ')')
     w('  say(' + Q + 'after_home_open' + Q + ', S.menu_open)')
-    w('  say(' + Q + 'home_swallowed' + Q + ', fake.calls.keypressed)')
+    # 差值，不是绝对次数：热键被吃掉时游戏**一次都不该收到**。
+    w('  say(' + Q + 'home_swallowed' + Q + ', fake.calls.keypressed - kc0)')
+    # ---- Tab 也是开关（有些键盘没有 Home 键）。它必须和 Home 一样**被吃掉**，
+    # 不能漏给游戏。用差值判，别写绝对次数。
+    w('  S.menu_open = false')
+    w('  local kc = fake.calls.keypressed')
+    w('  key(' + Q + 'tab' + Q + ')')
+    w('  say(' + Q + 'tab_opens_menu' + Q + ', S.menu_open)')
+    w('  key(' + Q + 'tab' + Q + ')')
+    w('  say(' + Q + 'tab_toggles_closed' + Q + ', S.menu_open == false)')
+    w('  say(' + Q + 'tab_leaked_to_game' + Q + ', fake.calls.keypressed - kc)')
+    w('  S.menu_open = true')
     w('  key(' + Q + 'down' + Q + ')      -- 顺带触发 S.items 构建')
     w('  say(' + Q + 'after_down_id' + Q + ', S.items and S.items[S.sel] and S.items[S.sel].id)')
     w('  say(' + Q + 'after_down_is_header' + Q + ', S.items and S.items[S.sel] and S.items[S.sel].header or false)')
@@ -167,21 +185,6 @@ def build_harness(release=False):
     w('    end')
     w('  end')
     w('  say(' + Q + 'labelless_items' + Q + ', table.concat(bad, ' + Q + ',' + Q + '))')
-    # ---- 命令通道
-    w('  local function runcmd(text)')
-    w('    local f = io.open(M .. ' + Q + '_kr6_cmd.txt' + Q + ', ' + Q + 'w' + Q + ')')
-    w('    f:write(text) f:close()')
-    w('    S.last_cmd_check = 0')
-    w('    pcall(fake.update)')
-    w('    local g = io.open(M .. ' + Q + '_kr6_cmd_out.txt' + Q + ')')
-    w('    local t = g and g:read(' + Q + '*a' + Q + ') or ' + Q + '' + Q + '')
-    w('    if g then g:close() end')
-    w('    return (t:gsub(string.char(10), ' + Q + '|' + Q + '))')
-    w('  end')
-    w('  say(' + Q + 'cmd_gold' + Q + ', runcmd(' + Q + 'gold 5000' + Q + '))')
-    w('  say(' + Q + 'gold_after_cmd' + Q + ', store.player_gold)')
-    w('  say(' + Q + 'cmd_lives' + Q + ', runcmd(' + Q + 'lives- 5' + Q + '))')
-    w('  say(' + Q + 'cmd_bogus' + Q + ', runcmd(' + Q + 'cmd no_such_action' + Q + '))')
     # ---- 倍率行走 S.mult，**不走 store**（tweak 的第二种目标）
     w('  S.menu_open = true')
     w('  pick(' + Q + 'enemy_hp' + Q + ') key(' + Q + 'right' + Q + ')')
@@ -201,6 +204,21 @@ def build_harness(release=False):
     w('  S.mult.enemy_hp = 0.1')
     w('  pick(' + Q + 'enemy_hp' + Q + ') key(' + Q + 'left' + Q + ')')
     w('  say(' + Q + 'mult_at_floor' + Q + ', S.mult.enemy_hp)')
+    # ---- 倍率只在本关生效：换关就归 1（v5 修的"不复位"）。同一关内**不许**动它，
+    # 否则功能会在中途自己失效（静默）。
+    w('  S.mult.enemy_hp = 2')
+    w('  S.last_level_check = 0  pcall(fake.update)')
+    w('  say(' + Q + 'mult_tag_set' + Q + ', S.mult_tag ~= nil)')
+    w('  S.last_level_check = 0  pcall(fake.update)')
+    w('  say(' + Q + 'mult_same_level' + Q + ', S.mult.enemy_hp)')
+    # 换一关：关卡标识变了（真实存档里 store.level_name 就是关卡名）。
+    # ⚠️ 别在这里换成另一张 store 表 —— 场上的实体挂在原表上，换表会让"场上的单位"
+    # 那一趟无从下手，倍率残留在实体上污染后面的用例（踩过）。
+    w('  store.level_name = ' + Q + 'level06' + Q)
+    w('  S.last_level_check = 0  pcall(fake.update)')
+    w('  say(' + Q + 'mult_after_level_change' + Q + ', S.mult.enemy_hp)')
+    w('  store.level_name = ' + Q + 'level05' + Q)
+    w('  S.last_level_check = 0  pcall(fake.update)')
     w('  say(' + Q + 'last_err' + Q + ', S.last_err)')
     # ---- 存档改写逻辑（S.slot_apply / S.slot_like 是刻意暴露给测试的）。
     # 测试环境没有 storage 模块、钩子装不上，所以直接调这两个函数。
@@ -209,11 +227,15 @@ def build_harness(release=False):
     w('             levels = { [1] = { stars = 2 }, [2] = { stars = 1 } },')
     # 存档里升级树是**数组**（{ "l1" }），不是字典 —— 写成 { l1 = "l1" } 就不是
     # 存档的形状了，测试会假过。
-    # ⚠️ 节点名按**真实存档**来：防御塔树和英雄树用的是同一套短 id（l1..ulti），
-    # 而且英雄树可能整个是空的。曾经 fixture 造了个 hero_x = { "skill_a" } 的假形状，
-    # 把"英雄风格"那条错误分支养活了 —— 而游戏里没有 skill_a/upg_a 这些名字，
-    # 写进存档会坏档（实际发生过）。别再写回来。
-    w('             upgrades_trees = { archers = { "l1" }, hero_gerald = {} },')
+    # ⚠️ 节点名有**两套**，别混：防御塔树是 l1/l2/l3a…/ulti，英雄树是 skill_a/skill_b/upg_a。
+    # 依据是两份**模组动手之前**的存档（09-24 22:26 的 slot1.lua、09-25 10:38 的备份）：
+    # archers=[l1]、artillery=[l1,l2]、hero_gerald 与 hero_zefira=[skill_a,skill_b,upg_a]。
+    # 把塔的节点名写进英雄树 = 改英雄风格，出过问题；skill_c/talent_*/upg_b/ultimate
+    # 这类名字在任何存档里都不存在，是编出来的。别再写回来。
+    w('             upgrades_trees = { archers = { "l1" },')
+    w('                                hero_gerald = {},')
+    w('                                hero_zefira = { "skill_a" },')
+    w('                                tower_wizard = {} },')
     w('             towers = { status = { archers = true, wizard = true },')
     w('                        selected = { "archers" } },')
     # heroes.status 的每个英雄是**表**（{ skills, xp }），不是布尔 —— 写成 true 的话
@@ -239,7 +261,7 @@ def build_harness(release=False):
     w('  say(' + Q + 'stars_total' + Q + ', total)')
     w('  say(' + Q + 'last_stars_untouched' + Q + ', t2.progression.last_stars)')
     w('  say(' + Q + 'ops_cleared' + Q + ', #S.slot_ops)')
-    # 升级树：补全但**沿用该表已有的风格**（短 id 命名空间不能混）
+    # 升级树：非英雄树（塔树 + tower_*/power_*）补全；英雄树**一个字节都不动**。
     w('  S.slot_ops = {}')
     w('  queue_op({ op = ' + Q + 'tree' + Q + ' })')
     w('  local t3 = mk_slot()  S.slot_apply(t3)')
@@ -248,17 +270,25 @@ def build_harness(release=False):
     w('    for _, x in pairs(arr) do if tostring(x) == v then return true end end')
     w('    return false')
     w('  end')
-    w('  say(' + Q + 'tree_filled' + Q + ',')
-    w('    has_val(t3.upgrades_trees.archers, ' + Q + 'ulti' + Q + ') and')
-    w('    has_val(t3.upgrades_trees.hero_gerald, ' + Q + 'ulti' + Q + '))')
-    # ★ 绝不能写入游戏里不存在的节点名（skill_* / talent_* / upg_* / ultimate）——
-    # 那是曾经坏过档的原因，也是这份断言存在的唯一理由。
-    w('  local bogus = { "skill_a", "skill_b", "skill_c", "talent_1", "talent_2",')
-    w('                  "upg_a", "upg_b", "ultimate" }')
+    w('  local function alen(arr) local n = 0')
+    w('    while arr[n + 1] ~= nil do n = n + 1 end return n end')
+    w('  local tr = t3.upgrades_trees')
+    w('  say(' + Q + 'tree_tower_filled' + Q + ',')
+    w('    has_val(tr.archers, ' + Q + 'ulti' + Q + ') and')
+    w('    has_val(tr.archers, ' + Q + 'l3a' + Q + ') and')
+    w('    has_val(tr.tower_wizard, ' + Q + 'ulti' + Q + '))')
+    w('  say(' + Q + 'tree_hero_untouched' + Q + ',')
+    w('    (alen(tr.hero_gerald) == 0) and')
+    w('    (alen(tr.hero_zefira) == 1) and')
+    w('    has_val(tr.hero_zefira, ' + Q + 'skill_a' + Q + ') and')
+    w('    (not has_val(tr.hero_zefira, ' + Q + 'l1' + Q + ')))')
+    # ★ 绝不能写入游戏里不存在的节点名（skill_c / talent_* / upg_b / ultimate）——
+    # 编节点名曾经弄坏过存档，这是这份断言存在的唯一理由。
+    w('  local bogus = { "skill_c", "talent_1", "talent_2", "upg_b", "ultimate" }')
     w('  local nbad = 0')
-    w('  for _, k in ipairs({ "archers", "hero_gerald" }) do')
+    w('  for _, arr in pairs(tr) do')
     w('    for _, v in ipairs(bogus) do')
-    w('      if has_val(t3.upgrades_trees[k], v) then nbad = nbad + 1 end')
+    w('      if has_val(arr, v) then nbad = nbad + 1 end')
     w('    end')
     w('  end')
     w('  say(' + Q + 'tree_no_bogus' + Q + ', nbad)')
@@ -306,15 +336,22 @@ def build_harness(release=False):
     w('  S.mult.enemy_hp = 1')
     w('  pcall(fake.update)')
     w('  say(' + Q + 'hp_max_back' + Q + ', store.entities[2].health.hp_max)')
-    # ---- 冒烟测试：把每个动作都从命令通道跑一遍。
+    # ---- 冒烟测试：把每个动作都从**菜单**跑一遍（v5 起玩家只有这条路）。
     # 专门抓「调用了声明在它上面的函数」—— 名字会静默解析成 nil 全局，只有那一个动作挂掉。
     w('  local smoke = {}')
     w('  for _, it in ipairs(S.items or {}) do')
     # 跳过两类：tweak「按设计必须有参数，不给参数必然失败」；分组标题
     # 「不是动作，跑出来必然是 unknown action hdr_xxx」。
     w('    if not it.header and it.id ~= ' + Q + 'tweak' + Q + ' then')
-    w('      local reply = runcmd(' + Q + 'cmd ' + Q + ' .. it.id)')
-    w('      if reply:find(' + Q + 'FAIL' + Q + ', 1, true)')
+    # 菜单里有一项是「关闭菜单」，跑到它菜单就关了 —— 每项之前重新打开，
+    # 否则它后面的条目全部落空、静默没被测。
+    w('      S.menu_open = true')
+    w('      S.msg = ' + Q + '' + Q)
+    w('      pick(it.id) key(' + Q + 'return' + Q + ')')
+    # 失败信号：run_action 出错会 note("出错 <id>: …")，未知 id 回 "unknown action"。
+    w('      local reply = tostring(S.msg)')
+    w('      if reply:find(' + Q + '\229\135\186\233\148\153' + Q + ')')
+    w('         or reply:find(' + Q + 'FAIL' + Q + ', 1, true)')
     w('         or reply:find(' + Q + 'unknown action' + Q + ', 1, true) then')
     w('        smoke[#smoke+1] = it.id .. ' + Q + '<' + Q + ' .. reply:sub(1, 40)')
     w('      end')
@@ -349,6 +386,10 @@ def build_harness(release=False):
     w('  _G.game.store = store')
     w('  say(' + Q + 'release' + Q + ', ' + ('true' if release else 'false') + ')')
     w('  S.menu_open = true')
+    w('  end, function(e)')
+    w('    return tostring(e) .. string.char(10) .. debug.traceback(' + Q + '' + Q + ', 2)')
+    w('  end)')
+    w('  if not ok then say(' + Q + 'harness_error' + Q + ', err) end')
     w('  flush()')
     w('end')
     w('function love.draw()')
@@ -414,6 +455,9 @@ def check_slim_payload():
                  "free_towers", "all_towers", "hide_ui", "tower_dmg",
                  "gems_add", "unlock_all"):
         check(gone not in src, "精简版里没有 " + gone)
+    # 发行版不许有轮询/心跳：命令文件通道、每秒写的诊断文件都不该出现。
+    for gone in ("_kr6_cmd", "_kr6_beat", "_kr6_font.txt", "CMD_MAP"):
+        check(gone not in src, "精简版里没有 " + gone)
     sys.path.insert(0, os.path.join(ROOT, "tools"))
     from release_flags import release_flags
     check(release_flags(src) == src, "release_flags() 对精简版是 no-op（不该再改任何东西）")
@@ -442,6 +486,10 @@ def main():
     if kv is None:
         print("没有产出日志 —— 测试台没跑起来")
         return 1
+    if kv.get("harness_error"):
+        print("测试台自己报错了（下面所有断言都不可信）：")
+        print(kv["harness_error"])
+        return 1
 
     print("\n断言:")
     check(kv.get("payload_ok") == "true", "payload 能加载并正常返回", kv.get("wrap_error", ""))
@@ -449,12 +497,19 @@ def main():
     check(kv.get("route2_keys") == "true", "已钩住 director.keypressed（路径 2）")
     check(kv.get("route2_mouse") == "true", "已钩住 director.mousepressed（路径 2）")
     # 功能键必须完全不触发（这是玩家要求的：容易误触）
-    check(kv.get("menu_after_fkeys") == "false", "F1–F6 不会打开菜单")
-    check(kv.get("passthrough_after_fkeys") == "12", "F1–F12 原样透传给游戏",
+    check(kv.get("menu_after_fkeys") == "false", "F1–F12 一个都不会打开菜单")
+    check(kv.get("passthrough_after_fkeys") == str(len(FKEYS)),
+          "F1–F12 原样透传给游戏（F1–F3 是玩家的物品热键，一个都不能吃）",
           "calls=" + kv.get("passthrough_after_fkeys", "?"))
     check(kv.get("after_home_open") == "true", "Home 打开菜单")
-    check(kv.get("home_swallowed") == "12", "Home 被吃掉，没透传",
-          "calls=" + kv.get("home_swallowed", "?"))
+    check(kv.get("home_swallowed") == "0", "Home 被吃掉，一次都没透传给游戏",
+          "leak=" + kv.get("home_swallowed", "?"))
+    check(kv.get("tab_opens_menu") == "true", "Tab 打开菜单（没有 Home 键的键盘）",
+          "menu=" + kv.get("tab_opens_menu", "?"))
+    check(kv.get("tab_toggles_closed") == "true", "Tab 再按一次关闭（和 Home 一样是开关）",
+          kv.get("tab_toggles_closed", "?"))
+    check(kv.get("tab_leaked_to_game") == "0", "Tab 被吃掉，没透传给游戏",
+          "leak=" + kv.get("tab_leaked_to_game", "?"))
     # ↓ 的语义断言：只关心「确实动了」+「不会停在分组标题上」，
     # 不写死落到第几项（那样每加一个条目就会假报警）。
     check(kv.get("after_down_is_header") == "false",
@@ -479,13 +534,7 @@ def main():
     check(kv.get("gold_after_hold") == "999999", "无限金钱花掉后自动补满",
           "gold=" + kv.get("gold_after_hold", "?"))
     check(kv.get("labelless_items") == "", "每个菜单项都有标签", kv.get("labelless_items", "?"))
-    # 命令通道
-    check("gold 5000" in kv.get("cmd_gold", ""), "命令通道 gold 动词", kv.get("cmd_gold", "?")[:50])
-    check(kv.get("gold_after_cmd") == "5000", "命令通道真的改了金币",
-          kv.get("gold_after_cmd", "?"))
-    check("lives" in kv.get("cmd_lives", ""), "命令通道 lives- 动词", kv.get("cmd_lives", "?")[:50])
-    check("unknown action" in kv.get("cmd_bogus", ""), "坏命令会如实报错",
-          kv.get("cmd_bogus", "?")[:60])
+    # （命令文件通道已在 v5 从发行版移除，对应的断言一并删掉）
     check(kv.get("last_err") == "nil", "全程未记录任何错误", kv.get("last_err", "?"))
     # 冒烟测试
     check(kv.get("smoke_failures") == "", "每个菜单动作都能跑通不报错",
@@ -504,6 +553,12 @@ def main():
           "val=" + kv.get("mult_active_after_reset", "?"))
     check(kv.get("mult_at_floor") == "0.1", "倍率到下限（0.1）就停住，不越界",
           "val=" + kv.get("mult_at_floor", "?"))
+    check(kv.get("mult_tag_set") == "true", "记下了本关的标识（换关检测的前提）",
+          "tag=" + kv.get("mult_tag_set", "?"))
+    check(kv.get("mult_same_level") == "2", "同一关内倍率**不**被复位",
+          "val=" + kv.get("mult_same_level", "?"))
+    check(kv.get("mult_after_level_change") == "1", "换关后倍率自动归 1（v5 修的不复位问题）",
+          "val=" + kv.get("mult_after_level_change", "?"))
     # 回归：**store.entities 是稀疏表**，必须用 pairs 而不是 1..#（细节见上面的假 store）。
     check(kv.get("hp_max_after") == "1000", "敌人血量倍率够得到稀疏实体表（不是 1..#）",
           "hp_max=" + kv.get("hp_max_after", "?"))
@@ -534,11 +589,14 @@ def main():
     check(kv.get("last_stars_untouched") == "0",
           "故意不动 progression.last_stars（游戏靠它发现新星星并发放内容）",
           "last_stars=" + kv.get("last_stars_untouched", "?"))
-    check(kv.get("tree_filled") == "true",
-          "升级树补全：防御塔树和英雄树都用同一套真实节点名补全（含空英雄树）",
-          kv.get("tree_filled", "?"))
+    check(kv.get("tree_tower_filled") == "true",
+          "升级树补全：塔树（含空的 tower_* 树）补到 ulti",
+          kv.get("tree_tower_filled", "?"))
+    check(kv.get("tree_hero_untouched") == "true",
+          "英雄树一个字节都不动（空的没填、已有的原样留着、塔节点名没写进去）",
+          kv.get("tree_hero_untouched", "?"))
     check(kv.get("tree_no_bogus") == "0",
-          "没有写入游戏里不存在的节点名（skill_*/talent_*/upg_*/ultimate）",
+          "没有写入游戏里不存在的节点名（skill_c/talent_*/upg_b/ultimate）",
           "bogus=" + kv.get("tree_no_bogus", "?"))
     # 英雄升级
     check(int(kv.get("hero_xp_raised", "0")) > 2865, "英雄拉满把出战英雄的经验抬高",

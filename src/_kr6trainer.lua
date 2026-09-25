@@ -11,8 +11,8 @@
 --
 -- 不碰防御塔（未验证有效，已从正式代码撤掉）。
 --
--- 热键：只有 Home 开关菜单 —— 不设任何 F 键，太容易误触。
--- 命令文件：往 _kr6_cmd.txt 写一行，结果写到 _kr6_cmd_out.txt；短名清单见 CMD_MAP。
+-- 热键：Home 或 Tab 开关菜单（有些键盘没有 Home 键）。没有命令文件、没有心跳：
+-- 只写三种文件，全是"发生了才写"——本次启动的钩子清单、出错记录、改存档前的自动备份。
 local virt, mod = ...
 
 local SEP = string.char(92)
@@ -39,9 +39,8 @@ end
 local S = _G.__kr6trainer
 if type(S) ~= "table" then
   S = {
-    fired = {}, frames = 0, hooks = {}, wrap_src = {}, tick_source = nil,
-    reports = 0, last_beat = 0, last_report = 0, t0 = os.time(),
-    api_done = false, hold = false, hold_lives = false, last_cmd_check = 0,
+    fired = {}, hooks = {}, wrap_src = {}, tick_source = nil,
+    hold = false, hold_lives = false, last_level_check = 0, mult_tag = nil,
     menu_open = false, sel = 1, cjk = false, font = nil, drew = false,
     rects = {}, msg = "", msg_ts = 0,
   }
@@ -711,7 +710,10 @@ local function apply_one_op(t, o)
   elseif op == "tree" then
     local tr = rawget(t, "upgrades_trees")
     if type(tr) ~= "table" then return false end
-    for _, arr in pairs(tr) do fill_node_array(arr) end
+    -- 英雄树用的是另一套节点名（skill_a/skill_b/upg_a），填塔的节点名等于改英雄风格 —— 不碰。
+    for k, arr in pairs(tr) do
+      if type(k) ~= "string" or k:sub(1, 5) ~= "hero_" then fill_node_array(arr) end
+    end
     return true
   elseif op == "hero_level" then
     -- 故意不挂菜单（英雄升级走「英雄」组的即时路径 hero_raise）。
@@ -845,7 +847,7 @@ end
 -- menu
 local MENU_TEXT = {
   cn = {
-    title = "KR6 修改器", hint = "Home 开关   ↑↓ 选择   ←→ 调整   Enter 执行   Esc 关闭",
+    title = "KR6 修改器", hint = "Home / Tab 开关   ↑↓ 选择   ←→ 调整   Enter 执行   Esc 关闭",
     gold_add = "金币 +1000", gold_sub = "金币 -1000",
     lives_add = "生命 +10", lives_sub = "生命 -10",
     hold = "无限金钱", hold_lives = "生命锁定",
@@ -862,7 +864,7 @@ local MENU_TEXT = {
     nolvl = "（未进入关卡）",
   },
   en = {
-    title = "KR6 TRAINER", hint = "home toggles   up/down   left/right   enter   esc",
+    title = "KR6 TRAINER", hint = "home / tab toggles   up/down   left/right   enter   esc",
     gold_add = "gold +1000", gold_sub = "gold -1000",
     lives_add = "lives +10", lives_sub = "lives -10",
     hold = "infinite gold", hold_lives = "lock lives",
@@ -971,10 +973,7 @@ local function try_load_font(want_size)
     local ok, f = pcall(love.graphics.newFont, cands[i], size)
     if ok and f then
       S.cjk = true
-      if not S.font_path then
-        S.font_path = cands[i]
-        wf("_kr6_font.txt", "CJK font loaded: " .. cands[i] .. "\n")
-      end
+      if not S.font_path then S.font_path = cands[i] end
       return f
     end
   end
@@ -984,11 +983,9 @@ local function try_load_font(want_size)
     local okg, has = pcall(cur.hasGlyphs, cur, "\229\134\160\229\184\129\231\148\159\229\145\189")
     if okg and has then
       S.cjk = true
-      wf("_kr6_font.txt", "CJK font: reused the game's active font\n")
       return cur
     end
   end
-  wf("_kr6_font.txt", "CJK font NOT found, falling back to built-in font (ASCII labels)\n")
   local ok, f = pcall(love.graphics.newFont, 14)
   if ok then return f end
   return nil
@@ -1187,25 +1184,6 @@ local function menu_key(key)
   end
 end
 
--- 开着菜单时要拦下的键（其余一律透传给游戏）
-local MENU_KEYS = {
-  up = true, down = true, left = true, right = true,
-  ["return"] = true, kpenter = true, escape = true, [" "] = true, home = true,
-}
-
--- frame tick
--- _kr6_cmd.txt 接受的动词。历史短名继续可用（README 里有、测试也在用）；
--- `cmd <动作id> [参数]` 是通用入口，不必开菜单就能驱动任何动作。
-local CMD_MAP = {
-  gold = "gold_set", goldadd = "gold_add", goldsub = "gold_sub",
-  lives = "lives_add", ["lives-"] = "lives_sub",
-  hold = "hold", holdlives = "hold_lives",
-  nextwave = "next_wave",
-  stars = "stars_max", unlocktree = "unlock_tree",
-  nowup = "hero_now_up", nowmax = "hero_now_max",
-  menu = "MENU", closemenu = "CLOSE",
-}
-
 -- 用游戏自己的换算函数读回等级。先自证它真是 xp→level 的映射，否则只报经验数字。
 local function hero_level_fn()
   if S.xp_fn_checked then return S.xp_fn end
@@ -1233,14 +1211,29 @@ local function hero_level_str(before, after)
   return "lvl " .. tostring(l1) .. "->" .. tostring(l2)
 end
 
+-- frame tick
 local function tick(source)
   if S.tick_source == nil then
     S.tick_source = source
   elseif S.tick_source ~= source then
     return
   end
-  S.frames = S.frames + 1
   S.drew = false
+
+  -- 倍率只在本关生效：关卡一换就归 1（归 1 后下面那一趟 mult_apply 会把模板写回原值）。
+  -- 每秒看一次足够 —— 换关不是逐帧事件。
+  local now = os.time()
+  if now > S.last_level_check then
+    S.last_level_check = now
+    local s = store_of()
+    local tag = s and tostring(s.level_name or s) or nil
+    if tag then
+      if S.mult_tag and S.mult_tag ~= tag then
+        S.mult.enemy_hp, S.mult.enemy_speed = 1, 1
+      end
+      S.mult_tag = tag
+    end
+  end
 
   if S.hold or S.hold_lives then
     pcall(function()
@@ -1305,52 +1298,6 @@ local function tick(source)
          "applied " .. n .. " save change(s) -- restart to see it")
   end
 
-  local now = os.time()
-  if now > S.last_cmd_check and not S.in_cmd then
-    S.last_cmd_check = now
-    local cmd = rf("_kr6_cmd.txt")
-    if cmd then
-      -- 重入保护：动作可能回调到被 tick 包住的游戏函数，从而重新进到这个派发里。
-      S.in_cmd = true
-      local line = cmd:gsub("[\r\n]+", " "):gsub("^%s+", ""):gsub("%s+$", "")
-      -- 执行**之前**先回显命令：命令卡死或崩掉时至少留下「当时在跑什么」的记录。
-      wf("_kr6_cmd_out.txt", tostring(line) .. string.char(10) .. "(running)" .. string.char(10))
-      local what, arg = line:match("^(%S+)%s*(.*)$")
-      what = (what or ""):lower()
-      if what == "cmd" then
-        local id2, rest = tostring(arg):match("^(%S+)%s*(.*)$")
-        what, arg = tostring(id2 or ""), rest or ""
-      else
-        what = CMD_MAP[what] or what
-      end
-      local res
-      if what == "" then
-        res = "empty command"
-      elseif what == "MENU" then
-        menu_toggle()
-        res = "menu_open=" .. tostring(S.menu_open)
-      elseif what == "CLOSE" then
-        S.menu_open = false
-        res = "menu closed"
-      else
-        res = run_action(what, arg)
-      end
-      wf("_kr6_cmd_out.txt", tostring(line) .. string.char(10) .. tostring(res) .. string.char(10))
-      -- 执行完才消费命令文件：否则「产生了结果但没写出来」和「根本没被读到」分不出来。
-      os.remove(save_dir() .. "_kr6_cmd.txt")
-      S.in_cmd = false
-    end
-  end
-
-  if now > S.last_beat then
-    S.last_beat = now
-    local st = store_stat()
-    wf("_kr6_beat.txt", "frames=" .. S.frames .. " source=" .. tostring(S.tick_source) ..
-       " t+" .. (now - S.t0) .. "s gold=" .. tostring(st and st.gold) ..
-       " lives=" .. tostring(st and st.lives) ..
-       " hold=" .. tostring(S.hold) .. "/" .. tostring(S.hold_lives) ..
-       " menu=" .. tostring(S.menu_open) .. " cjk=" .. tostring(S.cjk) .. "\n")
-  end
 end
 
 local function wrap_fn(owner, key, source)
@@ -1433,8 +1380,10 @@ local function on_key(key)
   end
   S.last_key, S.last_key_t = key, t
 
-  -- 只认 home 一个键：功能键太容易误触，所以不设任何 F 键热键；其余操作走菜单或命令文件。
-  if key == "home" then
+  -- 只有这两个键是热键：Home / Tab（有些键盘没有 Home 键）。
+  -- ⚠️ **不要用 F1–F3**：游戏自己 all/constants.lua 里 key_item_1/2/3 = "f1"/"f2"/"f3"，
+  -- 那是玩家的物品热键，抢了它玩家就按不出物品。F 键在笔记本上还常被固件占成媒体键。
+  if key == "home" or key == "tab" then
     menu_toggle()
     return true
   end
@@ -1535,18 +1484,12 @@ install_key_hook()
 install_ticks()
 
 if first_install then
-  -- 短名清单从 CMD_MAP **生成**，不写死 —— 写死的话加了新动词忘了同步，文件就会撒谎。
-  local shorts = {}
-  for k in pairs(CMD_MAP) do shorts[#shorts + 1] = tostring(k) end
-  table.sort(shorts)
-  local cmd_short = table.concat(shorts, " / ")
+  -- 装上了什么钩子，落一行盘 —— 玩家报「没反应」时这是唯一的现场证据。
   wf("_kr6trainer_loaded.txt",
      "fired=[" .. table.concat(S.fired, ", ") .. "]" .. string.char(10) ..
      "key_hook=" .. tostring(S.key_hook) .. string.char(10) ..
      "hooks=" .. table.concat(S.hooks, ", ") .. string.char(10) ..
-     "keys: Home = menu (no F-key hotkeys on purpose)" .. string.char(10) ..
-     "files: _kr6_cmd.txt -> _kr6_cmd_out.txt ; short names: " .. cmd_short .. string.char(10) ..
-     "       anything else: cmd <action id> [arg]" .. string.char(10))
+     "keys: Home / Tab = menu" .. string.char(10))
 end
 
 return "kr6trainer ok"

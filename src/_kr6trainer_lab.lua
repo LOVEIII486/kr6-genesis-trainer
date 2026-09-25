@@ -1496,8 +1496,9 @@ local REWARD_LAST_STARS = 84
 
 -- 存档里的升级树节点是**短 id**（l1、skill_a），kr6/upgrades.lua 里是**带前缀的**（archers_l1）：绝不能混用。
 local TOWER_NODES = { "l1", "l2", "l3a", "l3b", "l4a", "l4b", "ulti" }
-local HERO_NODES = { "skill_a", "skill_b", "skill_c", "talent_1", "talent_2",
-                     "upg_a", "upg_b", "ultimate" }
+-- ⚠️ 英雄树是**另一套名字**（实测只有 skill_a/skill_b/upg_a），而且**一律不碰**：
+-- 往里写塔的节点名 = 改英雄风格（出过问题），写 skill_c/talent_*/ultimate 那些更是编的。
+-- 曾经这里有一份 HERO_NODES 假名单 + 靠扫 "skill/upg/talent" 字样自动选风格，已删。
 
 -- 存档里的数组可能是稀疏的，所以不能用 #。
 local function slot_array_len(t)
@@ -1516,19 +1517,11 @@ end
 
 local function fill_node_array(arr)
   if type(arr) ~= "table" then return 0 end
-  local style = TOWER_NODES
   local n = slot_array_len(arr)
-  for i = 1, n do
-    local s = tostring(arr[i])
-    if s:find("skill") or s:find("upg") or s:find("talent") then
-      style = HERO_NODES
-      break
-    end
-  end
   local added = 0
-  for i = 1, #style do
-    if not slot_array_has(arr, style[i]) then
-      arr[n + added + 1] = style[i]
+  for i = 1, #TOWER_NODES do
+    if not slot_array_has(arr, TOWER_NODES[i]) then
+      arr[n + added + 1] = TOWER_NODES[i]
       added = added + 1
     end
   end
@@ -1570,7 +1563,10 @@ local function apply_one_op(t, o)
   elseif op == "tree" then
     local tr = rawget(t, "upgrades_trees")
     if type(tr) ~= "table" then return false end
-    for _, arr in pairs(tr) do fill_node_array(arr) end
+    -- 英雄树不碰（见 fill_node_array 上面的注释）。
+    for k, arr in pairs(tr) do
+      if type(k) ~= "string" or k:sub(1, 5) ~= "hero_" then fill_node_array(arr) end
+    end
     return true
   elseif op == "towers" then
     local tw = rawget(t, "towers")
@@ -2283,8 +2279,8 @@ local function on_key(key)
   end
   S.last_key, S.last_key_t = key, t
 
-  -- 只认 home 一个键：F 键太容易误触，所以不设任何 F 键热键；其余操作走菜单或命令文件。
-  if key == "home" then
+  -- 只有 Home / Tab 是热键（有些键盘没有 Home 键）。⚠️ 别用 F1–F3 = 游戏的物品热键。
+  if key == "home" or key == "tab" then
     menu_toggle()
     return true
   end
