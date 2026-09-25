@@ -2,13 +2,6 @@
 """
 用游戏自己的 Lua 运行时给源码做编译检查。
 
-Windows 上没有独立的 lua/luac，但本项目能从游戏 exe 裁出一个可用的 LÖVE
-（tools/selftest/make_runtime.py）。这里就用它跑一个临时 .love，
-loadstring 两个源文件并报告第一个语法错误。3 秒，**改完代码先跑这个**。
-
-为什么必要：覆盖桩用 pcall 包住 payload，所以 payload 有语法错在真游戏里是静默的
-—— 表现就是「装了但什么都没发生」。
-
     python tools/selftest/check_syntax.py
     python tools/selftest/check_syntax.py --game-dir "D:\\...\\Kingdom Rush Genesis"
 """
@@ -29,7 +22,10 @@ Q = chr(34)
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 RT = os.path.join(ROOT, "_scratch", "rt")
-SOURCES = ["src/_kr6trainer.lua", "src/shadow_director.lua"]
+# _kr6trainer_lab.lua 是功能全开那一版的**冻结快照**，不发布、不部署，
+# 但仍要能 loadstring —— 它躺在 src/ 里是给人回头继续开发的，
+# 语法烂掉就白留了。这一条几乎零成本（同一趟运行时顺便编译）。
+SOURCES = ["src/_kr6trainer.lua", "src/shadow_director.lua", "src/_kr6trainer_lab.lua"]
 
 
 def main():

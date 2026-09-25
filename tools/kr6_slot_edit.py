@@ -2,13 +2,6 @@
 """
 Kingdom Rush Genesis 离线存档编辑器。
 
-为什么必须离线：游戏的存档层是**异步文件 IO**（`load_slot` 发起读取后返回 nil，
-数据稍后经信号送达），存档从不常驻 Lua 内存，所以游戏内的菜单项改不了它。
-证据链见 docs/ENGINE_NOTES.md 第 5.6 节。
-
-**先关掉游戏再改**：游戏存档时会重写整个文件，运行时改的会被覆盖。
-本工具会检查并在游戏运行时拒绝写入（--force 可强写），每次写入前先备份。
-
     python tools/kr6_slot_edit.py show              # 看当前存档（只读，游戏开着也能跑）
     python tools/kr6_slot_edit.py gems 99999        # 宝石设为 99999（也支持 +500 / -500）
     python tools/kr6_slot_edit.py track             # 星星奖励轨道（解锁全部要 84 星）

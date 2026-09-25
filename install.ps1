@@ -18,13 +18,39 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-$ExeName  = 'Kingdom Rush Genesis.exe'
-$Identity = 'kingdom_rush_genesis'
-$Target   = 'all/director.lua'      # 要被顶掉的那个模块（游戏自己的代码）
-$Here     = $PSScriptRoot
+$ExeName   = 'Kingdom Rush Genesis.exe'
+$GameName  = 'Kingdom Rush Genesis'   # 游戏文件夹名（Steam 库里就是这个名字）
+$Identity  = 'kingdom_rush_genesis'
+$Target    = 'all/director.lua'      # 要被顶掉的那个模块（游戏自己的代码）
+$Here      = $PSScriptRoot
 
 function Say($msg)  { Write-Host $msg }
 function Fail($msg) { Write-Host "错误：$msg" -ForegroundColor Red; exit 1 }
+
+# 问注册表 + Steam 自己的库清单，拿到这台机器上所有的 Steam 库根目录。
+# 为什么要这个：原来那份候选路径是**硬编码猜的**（C:\Program Files (x86)\Steam…、
+# D:\Steam…、E:\Steam…），只能覆盖最常见的几种装法。实测有玩家的库根是 D:\GAME，
+# 一个都匹配不上 —— 猜路径这条路本来就不该是主力。
+function Get-SteamLibraries {
+    $out = @()
+    try {
+        $sp = (Get-ItemProperty 'HKCU:\Software\Valve\Steam' -Name SteamPath -ErrorAction Stop).SteamPath
+    } catch { return $out }
+    if (-not $sp) { return $out }
+    $sp = $sp -replace '/', '\'
+    $out += $sp
+    $vdf = $sp + '\steamapps\libraryfolders.vdf'
+    if (Test-Path $vdf) {
+        try {
+            $txt = Get-Content -LiteralPath $vdf -Raw -ErrorAction Stop
+            foreach ($m in [regex]::Matches($txt, '"path"\s+"([^"]+)"')) {
+                $p = $m.Groups[1].Value -replace '\\\\', '\'
+                if ($p) { $out += $p.TrimEnd('\') }
+            }
+        } catch { }
+    }
+    return $out
+}
 
 # FileStream.Read 不保证一次读满，补一个读满的辅助
 function Read-Fully($stream, [byte[]]$buffer, [int]$count) {
@@ -119,23 +145,51 @@ function Write-File([string]$path, [byte[]]$bytes) {
 
 # ------------------------------------------------------------------ 主流程
 
-# 优先用脚本自己所在的目录当游戏目录（发行版就是让你解压到游戏根目录）
+# 优先用脚本自己所在的位置推游戏目录
 $game = $GameDir
-if (-not $game -and (Test-Path (Join-Path $Here $ExeName))) { $game = $Here }
 if (-not $game) {
-    $cands = @(
-        'C:\Program Files (x86)\Steam\steamapps\common\Kingdom Rush Genesis',
-        'C:\Program Files\Steam\steamapps\common\Kingdom Rush Genesis',
-        'D:\Steam\steamapps\common\Kingdom Rush Genesis',
-        'D:\Game\Steam\steamapps\common\Kingdom Rush Genesis',
-        'E:\Steam\steamapps\common\Kingdom Rush Genesis'
+    # 从脚本所在目录**逐级向上**找 exe。
+    #
+    # 为什么要向上找：发行包解压出来是 kr6-trainer\ 这么一层子文件夹，所以脚本
+    # 所在的目录通常**不是**游戏根，而是它的下一层。老版本只测了 $Here 本层
+    # （Test-Path (Join-Path $Here $ExeName)），于是这个快路径永远命中不了 ——
+    # 只能掉到下面那串硬编码的猜测路径去。这是玩家装不上的真原因。
+    $probe = $Here
+    for ($up = 0; $up -lt 3 -and $probe; $up++) {
+        if (Test-Path ($probe.TrimEnd('\') + '\' + $ExeName)) { $game = $probe; break }
+        $parent = Split-Path -Parent $probe
+        if (-not $parent -or $parent -eq $probe) { break }
+        $probe = $parent
+    }
+}
+if (-not $game) {
+    # 再问 Steam 要库目录（注册表 + libraryfolders.vdf 能覆盖非默认装法），
+    # 最后才回落到硬编码的猜测。
+    $cands = @()
+    foreach ($lib in Get-SteamLibraries) {
+        $cands += [IO.Path]::Combine($lib, 'steamapps', 'common', $GameName)
+    }
+    $cands += @(
+        'C:\Program Files (x86)\Steam\steamapps\common\' + $GameName,
+        'C:\Program Files\Steam\steamapps\common\' + $GameName,
+        'D:\Steam\steamapps\common\' + $GameName,
+        'D:\Game\Steam\steamapps\common\' + $GameName,
+        'E:\Steam\steamapps\common\' + $GameName
     )
-    foreach ($d in $cands) { if (Test-Path (Join-Path $d $ExeName)) { $game = $d; break } }
+    foreach ($d in $cands) {
+        # 这里用字符串拼接而**不是** Join-Path：Join-Path 会通过 FileSystem
+        # provider 解析盘符，玩家机器上不存在的盘（比如没有 E 盘）会抛
+        # DriveNotFoundException 把整个脚本打死 —— 而这一段本来只是"试着找找看"，
+        # 找不到就该跳过。Test-Path 对不存在的盘只返回 False，不抛。
+        if (Test-Path ($d.TrimEnd('\') + '\' + $ExeName)) { $game = $d; break }
+    }
 }
 if (-not $game) {
-    Fail "找不到 $ExeName。`n请把本文件夹解压到游戏根目录（和 exe 放一起），或用 -GameDir 指定。"
+    Fail "找不到 $ExeName。`n请把压缩包里的文件解压到游戏根目录（和 exe 放一起），或用 -GameDir 指定。"
 }
-$exe = Join-Path $game $ExeName
+# 同样不用 Join-Path：$GameDir 是玩家给的，盘符可能根本不存在，
+# Join-Path 会在这里抛出一个对玩家毫无意义的异常。
+$exe = $game.TrimEnd('\') + '\' + $ExeName
 if (-not (Test-Path $exe)) { Fail "$ExeName 不在 $game 里" }
 
 $save = if ($SaveDir) { $SaveDir } else { Join-Path $env:APPDATA $Identity }

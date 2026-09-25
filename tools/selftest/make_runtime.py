@@ -2,12 +2,6 @@
 """
 从游戏自己的 exe 里裁出一个独立的 LÖVE 运行时（离线测试台）。
 
-游戏是 fused LÖVE 应用：exe 前 `delta` 字节就是普通的 love.exe（LÖVE 是 MIT 许可），
-后面追加的是游戏的 .love 负载。按 `delta` 截断就得到一个不含任何游戏内容的 love.exe，
-配上游戏的 DLL 就能离线跑测试 .love。
-
-本项目的所有验证都是这么做的。
-
     python tools/selftest/make_runtime.py
     python tools/selftest/make_runtime.py --game-dir "D:\\...\\Kingdom Rush Genesis"
     python tools/selftest/make_runtime.py --out ./_scratch/rt

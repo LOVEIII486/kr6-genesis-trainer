@@ -12,10 +12,12 @@ kr6-trainer 安装器。
     python install.py --release         # 玩家版：去掉诊断工具
     python install.py --save-dir "C:\\tmp\\test"    # 测试用
 
-装完启动游戏，按 F1。
+装完启动游戏，按 Home（**不是 F1** —— 这游戏没有也不该有 F 键热键，
+F1–F3 是玩家的物品键）。
 """
 import argparse
 import os
+import re
 import shutil
 import struct
 import sys
@@ -37,6 +39,7 @@ def _release_flags(src):
 # 游戏 exe = love.exe 的字节 + 追加在后面的 .love zip。
 # 用中央目录结束记录（EOCD）定位 zip，所以不必知道 love.exe 那部分有多长。
 EXE_NAME = "Kingdom Rush Genesis.exe"
+GAME_FOLDER = "Kingdom Rush Genesis"   # Steam 库里就是这个文件夹名
 TARGET_MODULE = "all/director.lua"          # the module we shadow
 DEFAULT_IDENTITY = "kingdom_rush_genesis"   # the game's LOVE identity
 LUAC_NAME = "all_director.luac"             # what we call the extracted blob
@@ -119,15 +122,69 @@ class FusedArchive:
         self.f.close()
 
 
+def _upward_from_here(levels=3):
+    """从脚本自己所在目录**逐级向上**找 exe。
+
+    为什么要向上找：发行包解压出来是 kr6-trainer\\ 一层子文件夹，所以脚本所在的
+    目录通常不是游戏根，而是它的下一层。只看本层的话这个快路径永远命中不了。
+    """
+    d = HERE
+    for _ in range(levels):
+        if os.path.isfile(os.path.join(d, EXE_NAME)):
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return None
+
+
+def _steam_libraries():
+    """问注册表 + Steam 自己的库清单，拿这台机器上所有的 Steam 库根目录。
+
+    比硬编码猜路径靠谱得多 —— 实测有玩家的库根是 D:\\GAME，那几个猜测一个都不匹配。
+    """
+    libs = []
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
+            steam = winreg.QueryValueEx(k, "SteamPath")[0]
+    except Exception:
+        return libs
+    if not steam:
+        return libs
+    steam = steam.replace("/", "\\")
+    libs.append(steam)
+    vdf = os.path.join(steam, "steamapps", "libraryfolders.vdf")
+    try:
+        with open(vdf, "r", encoding="utf-8", errors="replace") as f:
+            txt = f.read()
+    except OSError:
+        return libs
+    for m in re.finditer(r'"path"\s+"([^"]+)"', txt):
+        p = m.group(1).replace("\\\\", "\\").rstrip("\\")
+        if p:
+            libs.append(p)
+    return libs
+
+
 def find_game_dir(explicit):
     if explicit:
         if not os.path.isfile(os.path.join(explicit, EXE_NAME)):
             sys.exit("error: %s not found in %s" % (EXE_NAME, explicit))
         return explicit
-    for d in GAME_CANDIDATES:
+    # 1) 从脚本所在目录向上找（发行包解压成子文件夹时最常命中，也最快）
+    up = _upward_from_here()
+    if up:
+        return up
+    # 2) Steam 自己的库清单 + 硬编码猜测
+    cands = [os.path.join(lib, "steamapps", "common", GAME_FOLDER)
+             for lib in _steam_libraries()]
+    cands += GAME_CANDIDATES
+    for d in cands:
         if os.path.isfile(os.path.join(d, EXE_NAME)):
             return d
-    # 兜底：在各盘根目录下浅扫几层找 exe
+    # 3) 最后的兜底：在各盘根目录下浅扫几层找 exe（慢，但装在哪都能翻出来）
     for drive in ("C:\\", "D:\\", "E:\\", "F:\\"):
         for root, dirs, files in os.walk(drive):
             if root.count(os.sep) > 4:
@@ -214,8 +271,10 @@ def main():
     print("""
 done. Now:
   1. launch Kingdom Rush Genesis
-  2. press F1 in game to open the trainer menu
+  2. press Home in game to open the trainer menu
      (up/down select, left/right adjust, enter run, esc close; mouse works too)
+     NOTE: it is Home, not F1 - this game has no F-key hotkeys on purpose
+     (F1-F3 are the player's item keys).
 
 to remove it again:  python uninstall.py --save-dir "%s"
 """ % save_dir)
