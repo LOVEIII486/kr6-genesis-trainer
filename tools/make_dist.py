@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
-打包。默认出**玩家版**（只收玩家需要的文件，payload 里 DEV 关掉），--dev 出全源码快照。
+打包。**只有发行版是发给玩家的东西**：解压到游戏根目录，双击 install.bat，不需要 Python。
 
-三种包是三种完全不同的东西，别混。`docs/` 不属于任何一种：它是本地资料，已被
-.gitignore 排除。
+装了 Python 的玩家**不打包** —— 他们直接 clone 仓库跑 `install.py` 就行。曾经同时出过
+"玩家版"（`v<N>.zip`）和"发行版"（`v<N>-release.zip`），两个名字谁也分不清谁，别再回到那样。
 
-    python tools/make_dist.py                 # 玩家版 -> dist/kr6-trainer-v<N>.zip
-    python tools/make_dist.py --dev           # 全源码快照（含开发工具，含诊断项）
-    python tools/make_dist.py --release       # 发行版：解压到游戏根目录，双击 install.bat
+`docs/` 不属于任何一种：它是本地资料，已被 .gitignore 排除。
+
+    python tools/make_dist.py                 # 发行版 -> dist/kr6-trainer-v<N>-release.zip
+    python tools/make_dist.py --dev           # 全源码快照（自用备份，不发布）
 """
 import argparse
 import io
@@ -21,21 +22,10 @@ sys.path.insert(0, HERE)
 
 from release_flags import FlagNotFound, release_flags  # noqa: E402
 
-# docs/ 一并排除：那是本地逆向资料（笔记 + 逆向工具），三种包都不该带。
+# docs/ 一并排除：那是本地逆向资料（笔记 + 逆向工具），哪种包都不该带。
 EXCLUDE_DIRS = {"_scratch", "__pycache__", ".git", "dist", "docs"}
 EXCLUDE_EXT = {".pyc", ".love"}
 PAYLOAD = "src/_kr6trainer.lua"
-# 玩家版**显式白名单**：必须逐个列出 —— 用排除法的话，新加的文件（尤其不发布的
-# src/_kr6trainer_lab.lua）会悄悄进包。kr6_slot_edit.py 也要收：游戏内改不了存档进度。
-PLAYER_FILES = [
-    "README.md",
-    "LICENSE",
-    "install.py",
-    "uninstall.py",
-    "src/shadow_director.lua",
-    "tools/release_flags.py",
-    "tools/kr6_slot_edit.py",
-]
 
 # 发行版：给不装 Python 的玩家，只带安装所需的东西
 # （不含 install.py / tools/ / docs/）。解压到游戏根目录，双击 install.bat。
@@ -57,23 +47,6 @@ try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
     pass
-
-
-def player_build(z, n):
-    for rel in PLAYER_FILES:
-        full = os.path.join(ROOT, rel.replace("/", os.sep))
-        if not os.path.isfile(full):
-            sys.exit("error: %s is missing" % rel)
-        z.write(full, os.path.join("kr6-trainer", rel))
-        n += 1
-    src = io.open(os.path.join(ROOT, PAYLOAD.replace("/", os.sep)), encoding="utf-8").read()
-    try:
-        out = release_flags(src)
-    except FlagNotFound as e:
-        sys.exit("error: %s" % e)
-    z.writestr(os.path.join("kr6-trainer", PAYLOAD), out)
-    n += 1
-    return n
 
 
 def dev_build(z, n):
@@ -115,35 +88,30 @@ def release_build(z, n):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    ap.add_argument("--version", default="1")
+    ap.add_argument("--version", default="3", help="发版号（**发新版时记得改这里**，"
+                    "否则会静默覆盖上一版的同名文件）")
     ap.add_argument("--dev", action="store_true",
-                    help="full source snapshot instead of the player build")
-    ap.add_argument("--release", action="store_true",
-                    help="发行版：解压到游戏根目录，双击 install.bat（不需要 Python）")
+                    help="full source snapshot instead of the release build")
     args = ap.parse_args()
 
     dist = os.path.join(ROOT, "dist")
     os.makedirs(dist, exist_ok=True)
-    kind = "dev" if args.dev else ("release" if args.release else "player")
-    suffix = "-dev" if args.dev else ("-release" if args.release else "")
+    kind = "dev" if args.dev else "release"
+    suffix = "-dev" if args.dev else "-release"
     out = os.path.join(dist, "kr6-trainer-v%s%s.zip" % (args.version, suffix))
 
     n = 0
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         if args.dev:
             n = dev_build(z, n)
-        elif args.release:
-            n = release_build(z, n)
         else:
-            n = player_build(z, n)
+            n = release_build(z, n)
 
     print("wrote %s (%s build)" % (out, kind))
     print("  %d files, %.1f KB" % (n, os.path.getsize(out) / 1024.0))
     print("  docs/ 未包含（本地逆向资料，要备份请另行打包）")
-    if args.release:
+    if not args.dev:
         print("  整包解压到游戏根目录，双击 install.bat —— 不需要 Python、不需要 7-Zip")
-    elif not args.dev:
-        print("  payload 里 DEV = false：无诊断菜单项，也不写自动报告")
 
 
 if __name__ == "__main__":

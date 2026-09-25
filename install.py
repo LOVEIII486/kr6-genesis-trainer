@@ -17,7 +17,6 @@ kr6-trainer 安装器。
 """
 import argparse
 import os
-import re
 import shutil
 import struct
 import sys
@@ -49,6 +48,9 @@ SHADOW_PATH = "all/director.lua"
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "src")
 
+# 猜路径兜底。⚠️ 刻意**不做** Steam 库发现（读它的注册表键、再解析它的库配置文件）：
+# 那组特征与 Steam 盗号木马逐字重合，会被杀软启发式误报 —— 详见 docs/HANDOFF.md。
+# 猜不中时由 --game-dir 兜底。
 GAME_CANDIDATES = [
     r"C:\Program Files (x86)\Steam\steamapps\common\Kingdom Rush Genesis",
     r"C:\Program Files\Steam\steamapps\common\Kingdom Rush Genesis",
@@ -136,35 +138,6 @@ def _upward_from_here(levels=3):
     return None
 
 
-def _steam_libraries():
-    """问注册表 + Steam 的库清单，拿这台机器上所有的 Steam 库根目录。
-
-    比硬编码猜路径靠谱：库根可以装在任意盘符。
-    """
-    libs = []
-    try:
-        import winreg
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as k:
-            steam = winreg.QueryValueEx(k, "SteamPath")[0]
-    except Exception:
-        return libs
-    if not steam:
-        return libs
-    steam = steam.replace("/", "\\")
-    libs.append(steam)
-    vdf = os.path.join(steam, "steamapps", "libraryfolders.vdf")
-    try:
-        with open(vdf, "r", encoding="utf-8", errors="replace") as f:
-            txt = f.read()
-    except OSError:
-        return libs
-    for m in re.finditer(r'"path"\s+"([^"]+)"', txt):
-        p = m.group(1).replace("\\\\", "\\").rstrip("\\")
-        if p:
-            libs.append(p)
-    return libs
-
-
 def find_game_dir(explicit):
     if explicit:
         if not os.path.isfile(os.path.join(explicit, EXE_NAME)):
@@ -174,11 +147,8 @@ def find_game_dir(explicit):
     up = _upward_from_here()
     if up:
         return up
-    # 2) Steam 自己的库清单 + 硬编码猜测
-    cands = [os.path.join(lib, "steamapps", "common", GAME_FOLDER)
-             for lib in _steam_libraries()]
-    cands += GAME_CANDIDATES
-    for d in cands:
+    # 2) 猜路径兜底（刻意不做 Steam 库发现，理由见 GAME_CANDIDATES 上方的注释）
+    for d in GAME_CANDIDATES:
         if os.path.isfile(os.path.join(d, EXE_NAME)):
             return d
     # 3) 兜底：各盘根目录浅扫几层找 exe（慢，但装在哪都能翻出来）
@@ -189,7 +159,8 @@ def find_game_dir(explicit):
                 continue
             if EXE_NAME in files:
                 return root
-    sys.exit("error: could not find the game; pass --game-dir explicitly")
+    sys.exit("error: could not find the game; if Steam sits in a custom folder, "
+             "pass --game-dir explicitly")
 
 
 def default_save_dir(identity):

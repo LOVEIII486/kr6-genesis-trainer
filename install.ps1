@@ -27,29 +27,6 @@ $Here      = $PSScriptRoot
 function Say($msg)  { Write-Host $msg }
 function Fail($msg) { Write-Host "错误：$msg" -ForegroundColor Red; exit 1 }
 
-# 问注册表 + Steam 自己的库清单，拿到这台机器上所有的 Steam 库根目录。
-# 硬编码猜路径覆盖不全（有玩家的库根是 D:\GAME），只能当兜底。
-function Get-SteamLibraries {
-    $out = @()
-    try {
-        $sp = (Get-ItemProperty 'HKCU:\Software\Valve\Steam' -Name SteamPath -ErrorAction Stop).SteamPath
-    } catch { return $out }
-    if (-not $sp) { return $out }
-    $sp = $sp -replace '/', '\'
-    $out += $sp
-    $vdf = $sp + '\steamapps\libraryfolders.vdf'
-    if (Test-Path $vdf) {
-        try {
-            $txt = Get-Content -LiteralPath $vdf -Raw -ErrorAction Stop
-            foreach ($m in [regex]::Matches($txt, '"path"\s+"([^"]+)"')) {
-                $p = $m.Groups[1].Value -replace '\\\\', '\'
-                if ($p) { $out += $p.TrimEnd('\') }
-            }
-        } catch { }
-    }
-    return $out
-}
-
 # FileStream.Read 不保证一次读满，补一个读满的辅助
 function Read-Fully($stream, [byte[]]$buffer, [int]$count) {
     $got = 0
@@ -157,13 +134,10 @@ if (-not $game) {
     }
 }
 if (-not $game) {
-    # 再问 Steam 要库目录（注册表 + libraryfolders.vdf 能覆盖非默认装法），
-    # 最后才回落到硬编码的猜测。
-    $cands = @()
-    foreach ($lib in Get-SteamLibraries) {
-        $cands += [IO.Path]::Combine($lib, 'steamapps', 'common', $GameName)
-    }
-    $cands += @(
+    # 猜路径兜底。⚠️ 刻意**不做** Steam 库发现：那组特征（读 Steam 的注册表键、
+    # 再解析它的库配置文件）与 Steam 盗号木马逐字重合，会被杀软启发式误报 ——
+    # 实测与理由见 docs/HANDOFF.md，别按那条记录加回来。猜不中时由 -GameDir 兜底。
+    $cands = @(
         'C:\Program Files (x86)\Steam\steamapps\common\' + $GameName,
         'C:\Program Files\Steam\steamapps\common\' + $GameName,
         'D:\Steam\steamapps\common\' + $GameName,
@@ -177,7 +151,7 @@ if (-not $game) {
     }
 }
 if (-not $game) {
-    Fail "找不到 $ExeName。`n请把压缩包里的文件解压到游戏根目录（和 exe 放一起），或用 -GameDir 指定。"
+    Fail "找不到 $ExeName。`n请把压缩包里的文件解压到游戏根目录（和 exe 放一起）；`nSteam 装在自定义目录里的，用 -GameDir 指定游戏路径。"
 }
 # 同上：$GameDir 是玩家给的，盘符可能不存在，用 Join-Path 会抛异常。
 $exe = $game.TrimEnd('\') + '\' + $ExeName
@@ -232,15 +206,14 @@ foreach ($item in $plan) { Write-File $item.path $item.bytes }
 # 游戏**正在跑**的时候装：文件能写进去，但那个进程在启动时就已经把旧版本读进内存了，
 # 不会重新读 —— 玩家会看到「装了但什么都没发生」。这个坑真的踩过（自己也踩过），
 # 所以这里明确说一句，而不是让玩家去猜。
-$running = @(Get-Process -Name ($ExeName -replace '\.exe$', '') -ErrorAction SilentlyContinue).Count -gt 0
-
+#
+# ⚠️ 刻意**不**去探测游戏进程在不在跑：发行包里出现进程枚举会被杀软启发式盯上
+# （理由见 docs/HANDOFF.md）。改成无条件提醒，玩家看到的信息一字不少。
 Say ''
 Say '安装完成。'
 Say ''
-if ($running) {
-    Say '  ⚠ 游戏现在正开着 —— 请**先退出游戏再重新启动**，否则刚才装的不会生效。'
-    Say ''
-}
+Say '  ⚠ 如果游戏现在正开着 —— 请**先退出游戏再重新启动**，否则刚才装的不会生效。'
+Say ''
 Say '  1. 启动游戏'
 Say '  2. 游戏里按 Home 键开关修改器菜单'
 Say '     ↑↓ 选择   ←→ 调整   Enter 执行   Esc 关闭（鼠标点击也行）'

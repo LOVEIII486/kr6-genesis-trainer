@@ -65,14 +65,12 @@ $allDir = Join-Path $save 'all'
 if ((Test-Path $allDir) -and -not (Get-ChildItem $allDir -Force)) { Remove-Item $allDir -Force }
 
 # 同上：游戏开着的时候删，已经跑着的进程里那份模组还在，得重启才彻底干净。
-$running = @(Get-Process -Name 'Kingdom Rush Genesis' -ErrorAction SilentlyContinue).Count -gt 0
-
+# ⚠️ 刻意**不**去探测游戏进程在不在跑：发行包里出现进程枚举会被杀软启发式盯上
+# （理由见 docs/HANDOFF.md）。改成无条件提醒。
 Say ''
 Say '卸载完成，游戏回到原状。存档没被碰过。'
-if ($running) {
-    Say ''
-    Say '  ⚠ 游戏现在正开着 —— 重新启动一次才会彻底回到原状。'
-}
+Say ''
+Say '  ⚠ 如果游戏现在正开着 —— 重新启动一次才会彻底回到原状。'
 Say ''
 Say '本安装包放在游戏目录里的这些文件可以自行删除（它们跟游戏本身无关）：'
 Say '  install.bat / uninstall.bat / install.ps1 / uninstall.ps1 / mod\ / 使用说明.txt'
