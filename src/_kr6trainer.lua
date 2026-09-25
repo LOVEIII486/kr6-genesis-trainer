@@ -5,8 +5,11 @@
 -- 功能全开的开发版冻结在 src/_kr6trainer_lab.lua。
 --
 -- 提供：关卡内 金币 / 生命 / 无限金钱 / 生命锁定 / 立刻下一波；
---   塔与单位 敌人血量/移速**倍率**（只在本关生效，退出关卡即还原）；
---   存档 星星拉满 / 升级树补全 —— **排队式**（走拦存档读写），回主菜单再进一次档生效。
+--   敌人属性 血量/移速倍率（只在本关生效）；
+--   英雄 当场升级；
+--   存档 星星拉满 / 升级树补全（回主菜单重新加载存档后生效）。
+--
+-- 不碰防御塔（未验证有效，已从正式代码撤掉）。
 --
 -- 热键：只有 Home 开关菜单 —— 不设任何 F 键，太容易误触。
 -- 命令文件：往 _kr6_cmd.txt 写一行，结果写到 _kr6_cmd_out.txt；短名清单见 CMD_MAP。
@@ -170,6 +173,7 @@ end
 -- 前向声明：action() 调的这几个函数定义在文件更下面（否则解析成同名全局变量 = 静默失效）。
 -- 定义处**必须**写成 `名字 = function() ... end`，写成 `local function` 这里仍是 nil。
 local game_mod, balance_of, scale_table, mult_apply, mult_apply_live, queue_slot_op
+local na, hero_thresholds, hero_raise
 
 local function action(id, arg)
   if id == "gold_set" then
@@ -236,6 +240,14 @@ local function action(id, arg)
     return queue_slot_op({ op = "stars" }, "星星拉满", "max stars")
   elseif id == "unlock_tree" then
     return queue_slot_op({ op = "tree" }, "升级树补全", "fill upgrade trees")
+  elseif id == "hero_now_up" or id == "hero_now_max" then
+    -- 关卡内即时升级。失败时用 na()（**不含 "FAIL"**，冒烟测试把含 FAIL 的回复算失败）。
+    local msg, why = hero_raise(id == "hero_now_max" and "max" or "next")
+    if not msg then
+      local r = na(why)
+      note(r) return r
+    end
+    note(msg) return msg
   elseif id == "enemy_hp" or id == "enemy_speed" then
     -- 倍率行本身没有"执行"语义，但每个菜单项必须能用空参调用一次（冒烟测试会跑遍
     -- 全菜单），所以给一个**只读**查询；故意不做成按 Enter 重置，误触不该改数值。
@@ -266,7 +278,7 @@ end
 
 
 
--- 游戏内部：塔 / 单位 / 作弊
+-- 游戏内部：store / 单位 / 作弊
 
 -- 从 package.loaded 拿游戏模块（**不能用 require** —— payload 由覆盖桩加载，会重入）。
 game_mod = function(name)
@@ -278,11 +290,11 @@ game_mod = function(name)
 end
 
 -- 依赖缺失时的统一回复，**刻意不含 "FAIL"**（冒烟测试把含 FAIL 的回复算失败）。
-local function na(what)
+na = function(what)
   return "n/a: " .. tostring(what)
 end
 
--- balance 表（塔与单位的数值源）**不在 package.loaded 里**，只能从 upgrades 模块
+-- balance 表（敌人数值的源）**不在 package.loaded 里**，只能从 upgrades 模块
 -- 两个函数的 upvalue 拿。按**名字**找而不是按下标 —— 下标是反编译猜的。
 balance_of = function()
   local up = game_mod("upgrades")
@@ -520,11 +532,9 @@ end
 -- 星星奖励轨道总量（= map_data.lua 的 progression_rewards_premium，须与离线编辑器一致）。
 local REWARD_LAST_STARS = 84
 
--- 升级树节点：存档里是**短 id**（l1、skill_a），kr6/upgrades.lua 里**带前缀**（archers_l1）；
--- 两套命名空间绝不能混用，只沿用该树里已有的风格去补。
-local TOWER_NODES = { "l1", "l2", "l3a", "l3b", "l4a", "l4b", "ulti" }
-local HERO_NODES = { "skill_a", "skill_b", "skill_c", "talent_1", "talent_2",
-                     "upg_a", "upg_b", "ultimate" }
+-- 升级树节点。存档里是短 id，kr6/upgrades.lua 里带前缀（archers_l1），两套不能混。
+-- 防御塔树和英雄树用的是**同一套** id；别的节点名游戏里没有。
+local UPGRADE_NODES = { "l1", "l2", "l3a", "l3b", "l4a", "l4b", "ulti" }
 
 -- 存档里的数组按 1..n 存但可能稀疏，所以不能用 #。
 local function slot_array_len(t)
@@ -541,22 +551,14 @@ local function slot_array_has(t, v)
   return false
 end
 
--- 把 arr 补成 names 里缺的那些（沿用该表已有的节点名风格，两种不混用）
+-- 把 arr 补成 UPGRADE_NODES 里缺的那些。
 local function fill_node_array(arr)
   if type(arr) ~= "table" then return 0 end
-  local style = TOWER_NODES
   local n = slot_array_len(arr)
-  for i = 1, n do
-    local s = tostring(arr[i])
-    if s:find("skill") or s:find("upg") or s:find("talent") then
-      style = HERO_NODES
-      break
-    end
-  end
   local added = 0
-  for i = 1, #style do
-    if not slot_array_has(arr, style[i]) then
-      arr[n + added + 1] = style[i]
+  for i = 1, #UPGRADE_NODES do
+    if not slot_array_has(arr, UPGRADE_NODES[i]) then
+      arr[n + added + 1] = UPGRADE_NODES[i]
       added = added + 1
     end
   end
@@ -573,6 +575,121 @@ local function stars_total(t)
     end
   end
   return sum
+end
+
+-- 英雄等级不落存档，只存经验；等级由 xp 过 game_settings.hero_xp_thresholds 推出。
+-- 用 pairs 不用 #：这张表的形状没验证过，稀疏表的 `#` 会返回 0。
+local function next_threshold(thr, xp)
+  local best
+  for _, v in pairs(thr) do
+    if type(v) == "number" and v > xp and (best == nil or v < best) then best = v end
+  end
+  return best
+end
+
+local function thr_top(thr)
+  local top
+  for _, v in pairs(thr) do
+    if type(v) == "number" and (top == nil or v > top) then top = v end
+  end
+  return top
+end
+
+hero_thresholds = function()
+  local gs = game_mod("game_settings")
+  local thr = gs and rawget(gs, "hero_xp_thresholds")
+  return (type(thr) == "table") and thr or nil
+end
+
+-- 出战英雄在应用时刻解析（排队时存档表还没出现）。取不到就放弃，不新建 status 条目。
+local function hero_of_slot(t)
+  local hs = rawget(t, "heroes")
+  if type(hs) ~= "table" then return nil end
+  local st = rawget(hs, "status")
+  if type(st) ~= "table" then return nil end
+  local function owned(id)
+    return type(id) == "string" and type(rawget(st, id)) == "table"
+  end
+  local id = rawget(hs, "selected")
+  if not owned(id) then
+    local team = rawget(hs, "team")
+    if type(team) == "table" then
+      -- team 通常是数组，但形状没被验证过 —— 数组取不到就在字典里找第一个可用的。
+      if owned(rawget(team, 1)) then
+        id = rawget(team, 1)
+      else
+        for _, v in pairs(team) do
+          if owned(v) then id = v break end
+        end
+      end
+    end
+  end
+  if not owned(id) then return nil end
+  return id, rawget(st, id)
+end
+
+-- 关卡内英雄即时升级：先写 hero.level 与 hero.xp，再调 hero.fn_level_up(实体, store, true)
+-- 让游戏自己应用属性（光调回调不会改等级）。用 level_stats.hp_max 校验是否真的生效。
+-- 上限 10 级（hero_xp_thresholds 有 9 个阈值），等级 N 对应 thr[N-1]。
+hero_raise = function(mode)
+  local s = store_of()
+  if not s then return nil, "不在关卡内" end
+  local team = rawget(s, "hero_team")
+  if type(team) ~= "table" then return nil, "这一关没有出战英雄" end
+  local thr = hero_thresholds()
+  local cap = 10
+  if type(thr) == "table" then
+    local n = 0
+    for _ in pairs(thr) do n = n + 1 end
+    if n > 0 then cap = n + 1 end
+  end
+
+  local function who(e, idx)
+    local r = rawget(e, "render")
+    local sp = (type(r) == "table") and rawget(r, "sprites") or nil
+    local p1 = (type(sp) == "table") and rawget(sp, 1) or nil
+    local p = (type(p1) == "table") and rawget(p1, "prefix") or nil
+    if type(p) == "string" then return (p:gsub("Def$", "")) end
+    return "第" .. tostring(idx) .. "个"
+  end
+
+  local leveled, skipped, bad = 0, 0, 0
+  local detail = {}
+  for idx, e in pairs(team) do
+    local h = (type(e) == "table") and rawget(e, "hero") or nil
+    if type(h) == "table" and type(rawget(h, "level")) == "number" then
+      local lv = rawget(h, "level")
+      local f = rawget(h, "fn_level_up")
+      local target = (mode == "max") and cap or (lv + 1)
+      if target > cap then target = cap end
+      if type(f) ~= "function" or lv >= cap or target <= lv then
+        skipped = skipped + 1
+      else
+        local want
+        local ls = rawget(h, "level_stats")
+        local row = (type(ls) == "table") and rawget(ls, "hp_max") or nil
+        if type(row) == "table" then want = rawget(row, target) end
+        h.level = target
+        if type(thr) == "table" and thr[target - 1] ~= nil then h.xp = thr[target - 1] end
+        local ok = pcall(f, e, s, true)
+        local hp = (type(e.health) == "table") and e.health.hp_max or nil
+        if not ok or (want ~= nil and hp ~= want) then
+          bad = bad + 1
+        else
+          leveled = leveled + 1
+          detail[#detail + 1] = who(e, idx) .. " " .. tostring(lv) .. "->" .. tostring(target)
+        end
+      end
+    end
+  end
+  if leveled == 0 then
+    if bad > 0 then return nil, "升级没确认生效（等级写了但属性没跟上）" end
+    return nil, "没有可升级的英雄（都满级了？）"
+  end
+  local msg = leveled .. " 个英雄升级：" .. table.concat(detail, "，")
+  if skipped > 0 then msg = msg .. "（跳过 " .. skipped .. " 个）" end
+  if bad > 0 then msg = msg .. "（" .. bad .. " 个没确认）" end
+  return msg
 end
 
 -- 单条操作的实现。每条都自己判类型 —— 存档结构变了宁可什么都不做。
@@ -596,6 +713,36 @@ local function apply_one_op(t, o)
     if type(tr) ~= "table" then return false end
     for _, arr in pairs(tr) do fill_node_array(arr) end
     return true
+  elseif op == "hero_level" then
+    -- 故意不挂菜单（英雄升级走「英雄」组的即时路径 hero_raise）。
+    -- 留着这条 op 是因为单元测试用它钉住「结构化失败不能被算成成功」这条不变量。
+    local hid, st = hero_of_slot(t)
+    if not hid then return false end
+    local xp = rawget(st, "xp")
+    if type(xp) ~= "number" then return false end
+    local target
+    if o.mode == "max" then
+      -- 拉满**不依赖任何未验证的东西**：写一个大值，游戏读档时自己按 xp 重算等级并夹到
+      -- 上限（storage 里有 restore_hero_levels / max_hero_ultimate_level）。
+      local thr = hero_thresholds()
+      local top = thr and thr_top(thr)
+      target = (top or xp) + 10000
+    else
+      local thr = hero_thresholds()
+      if not thr then return false end   -- 阈值表读不到就不猜，「升一级」必须名副其实
+      target = next_threshold(thr, xp)
+      if not target then
+        -- 已经满级。这**不算失败**：玩家要的结果（不能再高）本来就成立，
+        -- 报成失败会让人以为功能坏了。
+        S.hero_last = { hero = hid, before = xp, after = xp, at_max = true }
+        return true
+      end
+    end
+    st.xp = target
+    -- ⚠️ 钩子挂在 storage 的 IO 边界上，那里**不能调 note()/游戏函数**（会重入）。
+    -- 只把结果留在 S 里，由 tick 在钩子外组装成人话。
+    S.hero_last = { hero = hid, before = xp, after = target, mode = o.mode }
+    return true
   end
   return false
 end
@@ -606,12 +753,21 @@ local function apply_slot_ops(t)
   if type(ops) ~= "table" or #ops == 0 then return 0 end
   local n = 0
   for i = 1, #ops do
-    local ok = pcall(apply_one_op, t, ops[i])
-    if ok then n = n + 1 end
+    -- 两个都要看：apply_one_op 用 `return false` 报的结构化失败，只看 pcall 的 ok 会漏掉。
+    local ok, res = pcall(apply_one_op, t, ops[i])
+    if ok and res then
+      n = n + 1
+    else
+      S.slot_failed = S.slot_failed or {}
+      S.slot_failed[#S.slot_failed + 1] = tostring(ops[i] and ops[i].op or "?")
+    end
   end
   -- 失败的也清掉 —— 否则一条坏操作会永远卡在那里反复失败。
   for i = #ops, 1, -1 do ops[i] = nil end
   S.slot_ops_done = (S.slot_ops_done or 0) + n
+  -- 成功了要**主动报出来**：这条管线的待办只存在内存里，游戏若没重写存档就无声丢失。
+  -- 不报的话，"按下去了但什么都没发生"和"还没轮到应用"玩家分不出来（踩过这个坑）。
+  if n > 0 then S.slot_applied = n end
   return n
 end
 
@@ -694,10 +850,12 @@ local MENU_TEXT = {
     lives_add = "生命 +10", lives_sub = "生命 -10",
     hold = "无限金钱", hold_lives = "生命锁定",
     next_wave = "立刻下一波",
-    hdr_res = "资源", hdr_wave = "波次", hdr_units = "塔与单位",
+    hdr_res = "资源", hdr_wave = "波次", hdr_units = "敌人属性",
+    hdr_hero = "英雄",
     hdr_save = "存档（回主菜单再进档生效）",
     enemy_hp = "敌人血量", enemy_speed = "敌人移速",
     stars_max = "星星拉满", unlock_tree = "升级树补全",
+    hero_now_up = "英雄升一级（本关立即）", hero_now_max = "英雄拉满（本关立即）",
     close = "关闭菜单",
     on = "开", off = "关",
     labels = { "金币", "生命", "关卡" },
@@ -709,10 +867,12 @@ local MENU_TEXT = {
     lives_add = "lives +10", lives_sub = "lives -10",
     hold = "infinite gold", hold_lives = "lock lives",
     next_wave = "next wave now",
-    hdr_res = "RESOURCES", hdr_wave = "WAVES", hdr_units = "TOWERS & UNITS",
+    hdr_res = "RESOURCES", hdr_wave = "WAVES", hdr_units = "ENEMY STATS",
+    hdr_hero = "HEROES",
     hdr_save = "SAVE (apply on reload)",
     enemy_hp = "enemy HP", enemy_speed = "enemy speed",
     stars_max = "max stars", unlock_tree = "fill upgrade trees",
+    hero_now_up = "hero +1 level (now)", hero_now_max = "hero max (now)",
     close = "close menu",
     on = "ON", off = "OFF",
     labels = { "gold", "lives", "lvl" },
@@ -771,11 +931,17 @@ local function menu_items()
     { id = "enemy_speed", label = L("enemy_speed"),
       adjust = { set = M, key = "enemy_speed", step = 0.25, sign = 1, min = 0.1, max = 10 },
       value = function() return fmt_mult(S.mult.enemy_speed) end },
+    -- 英雄**单独一组**：它们和上面那两项（敌人属性倍率）不是一回事 ——
+    -- 倍率是本关临时改数值，英雄升级会经游戏自己写回档案。混在一起标签会撒谎。
+    { id = "hdr_hero",  label = L("hdr_hero"), header = true },
+    { id = "hero_now_up",  label = L("hero_now_up") },
+    { id = "hero_now_max", label = L("hero_now_max") },
 
     -- 存档级。**排队**式：按下去不会立刻变，要回主菜单再进一次档（分组标题里已注明）。
     { id = "hdr_save", label = L("hdr_save"), header = true },
     { id = "stars_max",  label = L("stars_max") },
     { id = "unlock_tree", label = L("unlock_tree") },
+    -- 英雄升级不在这组（排队式），在下面的「英雄」组，即时生效。
   }
   items[#items + 1] = { id = "close", label = L("close") }
   S.items = items          -- 暴露出去，测试按 id 查条目用
@@ -1036,8 +1202,36 @@ local CMD_MAP = {
   hold = "hold", holdlives = "hold_lives",
   nextwave = "next_wave",
   stars = "stars_max", unlocktree = "unlock_tree",
+  nowup = "hero_now_up", nowmax = "hero_now_max",
   menu = "MENU", closemenu = "CLOSE",
 }
+
+-- 用游戏自己的换算函数读回等级。先自证它真是 xp→level 的映射，否则只报经验数字。
+local function hero_level_fn()
+  if S.xp_fn_checked then return S.xp_fn end
+  S.xp_fn_checked = true
+  local gu = game_mod("gui_utils")
+  local f = gu and rawget(gu, "get_hero_level")
+  if type(f) == "function" then
+    local ok0, lo = pcall(f, 0)
+    local ok1, hi = pcall(f, 100000000)
+    if ok0 and ok1 and type(lo) == "number" and type(hi) == "number" and hi > lo then
+      S.xp_fn = f
+    end
+  end
+  return S.xp_fn
+end
+
+-- 语言中立的等级片段（"lvl 3->4"），中英文案都能直接拼；读不到返回 nil。
+local function hero_level_str(before, after)
+  local f = hero_level_fn()
+  if not f then return nil end
+  local ok1, l1 = pcall(f, before)
+  local ok2, l2 = pcall(f, after)
+  if not (ok1 and ok2 and type(l1) == "number" and type(l2) == "number") then return nil end
+  if l1 == l2 then return "lvl " .. tostring(l1) end
+  return "lvl " .. tostring(l1) .. "->" .. tostring(l2)
+end
 
 local function tick(source)
   if S.tick_source == nil then
@@ -1061,7 +1255,7 @@ local function tick(source)
     end)
   end
 
-  -- 「塔与单位」组：**游戏自己会重算这些值**，写一次就被覆盖，所以每帧重放。都不加开关
+  -- 敌人属性倍率组：**游戏自己会重算这些值**，写一次就被覆盖，所以每帧重放。都不加开关
   -- 守卫 —— 关掉时也得跑一趟把原值写回去；倍率全是 x1 时完全不动游戏。
   local mm = S.mult
   local mult_active = (mm.enemy_hp ~= 1 or mm.enemy_speed ~= 1)
@@ -1081,6 +1275,34 @@ local function tick(source)
   if not S.slot_hooks_done then
     local n = install_slot_hooks()
     if n > 0 or (game_mod("storage") ~= nil) then S.slot_hooks_done = true end
+  end
+
+  -- 存档改动的回执。钩子里不能调 note()（在 storage 的 IO 边界上，重入），所以结果
+  -- 先留在 S 里，在这里组装成人话。
+  if S.hero_last then
+    local h = S.hero_last
+    S.hero_last = nil
+    local lv = hero_level_str(h.before, h.after)
+    local tail = lv and (" " .. lv) or ""
+    local xp = "  " .. tostring(h.before) .. "->" .. tostring(h.after)
+    if h.at_max then
+      note("英雄 " .. h.hero .. " 已经是最高级" .. tail,
+           "hero " .. h.hero .. " already at max level" .. tail)
+    else
+      note("英雄 " .. h.hero .. " 升级" .. tail .. "  经验" .. xp,
+           "hero " .. h.hero .. " level up" .. tail .. "  xp" .. xp)
+    end
+  end
+  if type(S.slot_failed) == "table" and #S.slot_failed > 0 then
+    local names = table.concat(S.slot_failed, ",")
+    S.slot_failed = nil
+    note("有存档改动没能应用：" .. names, "slot ops not applied: " .. names)
+  elseif S.slot_applied then
+    -- 成功也要说一声：否则"按下去了但还没轮到应用"和"根本没生效"玩家分不出来。
+    local n = S.slot_applied
+    S.slot_applied = nil
+    note("存档改动已应用 " .. n .. " 条 —— 重启游戏后生效",
+         "applied " .. n .. " save change(s) -- restart to see it")
   end
 
   local now = os.time()

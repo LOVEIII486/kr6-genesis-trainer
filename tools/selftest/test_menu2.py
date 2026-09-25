@@ -209,11 +209,17 @@ def build_harness(release=False):
     w('             levels = { [1] = { stars = 2 }, [2] = { stars = 1 } },')
     # 存档里升级树是**数组**（{ "l1" }），不是字典 —— 写成 { l1 = "l1" } 就不是
     # 存档的形状了，测试会假过。
-    w('             upgrades_trees = { archers = { "l1" }, hero_x = { "skill_a" } },')
+    # ⚠️ 节点名按**真实存档**来：防御塔树和英雄树用的是同一套短 id（l1..ulti），
+    # 而且英雄树可能整个是空的。曾经 fixture 造了个 hero_x = { "skill_a" } 的假形状，
+    # 把"英雄风格"那条错误分支养活了 —— 而游戏里没有 skill_a/upg_a 这些名字，
+    # 写进存档会坏档（实际发生过）。别再写回来。
+    w('             upgrades_trees = { archers = { "l1" }, hero_gerald = {} },')
     w('             towers = { status = { archers = true, wizard = true },')
     w('                        selected = { "archers" } },')
-    w('             heroes = { status = { hero_a = true, hero_b = true },')
-    w('                        team = { "hero_a" } },')
+    # heroes.status 的每个英雄是**表**（{ skills, xp }），不是布尔 —— 写成 true 的话
+    # 英雄升级 op 会抛错被 pcall 吞掉，测试照样通过（假过）。selected 是「出战英雄」。
+    w('             heroes = { status = { hero_a = { xp = 2865 }, hero_b = { xp = 0 } },')
+    w('                        selected = "hero_a", team = { "hero_a" } },')
     w('             progression = { last_stars = 0 } }')
     w('  end')
     # 指纹：不满足 gems/levels/upgrades_trees 的表一律不认（否则会误改别的表）
@@ -242,10 +248,47 @@ def build_harness(release=False):
     w('    for _, x in pairs(arr) do if tostring(x) == v then return true end end')
     w('    return false')
     w('  end')
-    w('  say(' + Q + 'tree_style_pure' + Q + ',')
+    w('  say(' + Q + 'tree_filled' + Q + ',')
     w('    has_val(t3.upgrades_trees.archers, ' + Q + 'ulti' + Q + ') and')
-    w('    not has_val(t3.upgrades_trees.hero_x, ' + Q + 'l1' + Q + ') and')
-    w('    has_val(t3.upgrades_trees.hero_x, ' + Q + 'skill_b' + Q + '))')
+    w('    has_val(t3.upgrades_trees.hero_gerald, ' + Q + 'ulti' + Q + '))')
+    # ★ 绝不能写入游戏里不存在的节点名（skill_* / talent_* / upg_* / ultimate）——
+    # 那是曾经坏过档的原因，也是这份断言存在的唯一理由。
+    w('  local bogus = { "skill_a", "skill_b", "skill_c", "talent_1", "talent_2",')
+    w('                  "upg_a", "upg_b", "ultimate" }')
+    w('  local nbad = 0')
+    w('  for _, k in ipairs({ "archers", "hero_gerald" }) do')
+    w('    for _, v in ipairs(bogus) do')
+    w('      if has_val(t3.upgrades_trees[k], v) then nbad = nbad + 1 end')
+    w('    end')
+    w('  end')
+    w('  say(' + Q + 'tree_no_bogus' + Q + ', nbad)')
+
+    # 英雄升级：只动**出战英雄**（heroes.selected），别的英雄一个字段都不许变。
+    # 这里测 max 模式 —— 它不依赖任何未验证的东西（next 模式要读 game_settings 里那张
+    # 阈值表，测试台没有那个模块，所以那条路只能在实机验）。
+    w('  S.slot_ops = {}')
+    w('  queue_op({ op = ' + Q + 'hero_level' + Q + ', mode = ' + Q + 'max' + Q + ' })')
+    w('  local t4 = mk_slot()  S.slot_apply(t4)')
+    w('  say(' + Q + 'hero_xp_raised' + Q + ', t4.heroes.status.hero_a.xp)')
+    w('  say(' + Q + 'hero_other_untouched' + Q + ', t4.heroes.status.hero_b.xp)')
+    # 形状不对（条目是布尔）→ 失败**且什么都不改**，绝不新建条目（新建等于替玩家伪造一个
+    # 他没拥有的英雄）。这条同时钉住 apply_slot_ops：结构化失败不能被算成应用成功。
+    w('  S.slot_ops = {}')
+    w('  S.slot_ops_done = 0')
+    w('  local bad = mk_slot()')
+    w('  bad.heroes.status.hero_a = true')
+    w('  queue_op({ op = ' + Q + 'hero_level' + Q + ', mode = ' + Q + 'max' + Q + ' })')
+    w('  local applied = S.slot_apply(bad)')
+    w('  say(' + Q + 'hero_bad_applied' + Q + ', applied)')
+    w('  say(' + Q + 'hero_bad_done' + Q + ', S.slot_ops_done)')
+    w('  say(' + Q + 'hero_bad_untouched' + Q + ', tostring(bad.heroes.status.hero_a))')
+    w('  say(' + Q + 'hero_bad_no_new_key' + Q + ', bad.heroes.status.hero_c == nil)')
+    # 没出息英雄可用时（status 缺失）同样失败、不抛错
+    w('  S.slot_ops = {}')
+    w('  local ns = mk_slot()')
+    w('  ns.heroes.status = {}')
+    w('  queue_op({ op = ' + Q + 'hero_level' + Q + ', mode = ' + Q + 'max' + Q + ' })')
+    w('  say(' + Q + 'hero_none_applied' + Q + ', S.slot_apply(ns))')
 
     # ---- 稀疏 entities 的回归：假 store 故意只放 [2] 和 [7]、没有 [1] —— 遍历写成
     # `for i = 1, #s.entities` 会一次都不进（# 返回 0），倍率整个静默失效。
@@ -491,9 +534,28 @@ def main():
     check(kv.get("last_stars_untouched") == "0",
           "故意不动 progression.last_stars（游戏靠它发现新星星并发放内容）",
           "last_stars=" + kv.get("last_stars_untouched", "?"))
-    check(kv.get("tree_style_pure") == "true",
-          "升级树沿用各自风格（塔树补 l/ulti、英雄树补 skill_，两种命名空间不混）",
-          kv.get("tree_style_pure", "?"))
+    check(kv.get("tree_filled") == "true",
+          "升级树补全：防御塔树和英雄树都用同一套真实节点名补全（含空英雄树）",
+          kv.get("tree_filled", "?"))
+    check(kv.get("tree_no_bogus") == "0",
+          "没有写入游戏里不存在的节点名（skill_*/talent_*/upg_*/ultimate）",
+          "bogus=" + kv.get("tree_no_bogus", "?"))
+    # 英雄升级
+    check(int(kv.get("hero_xp_raised", "0")) > 2865, "英雄拉满把出战英雄的经验抬高",
+          "xp=" + kv.get("hero_xp_raised", "?"))
+    check(kv.get("hero_other_untouched") == "0", "只动出战英雄，其他英雄的经验一个都不变",
+          "hero_b xp=" + kv.get("hero_other_untouched", "?"))
+    check(kv.get("hero_bad_applied") == "0",
+          "存档形状不对时英雄 op 不算应用成功（结构化失败不能被当成成功）",
+          "applied=" + kv.get("hero_bad_applied", "?"))
+    check(kv.get("hero_bad_done") == "0", "失败的 op 不计入 slot_ops_done",
+          "done=" + kv.get("hero_bad_done", "?"))
+    check(kv.get("hero_bad_untouched") == "true", "失败时连碰都不碰那个条目",
+          kv.get("hero_bad_untouched", "?"))
+    check(kv.get("hero_bad_no_new_key") == "true", "失败时不新建英雄条目（不伪造拥有权）",
+          kv.get("hero_bad_no_new_key", "?"))
+    check(kv.get("hero_none_applied") == "0", "没有出战英雄可解析时失败且不抛错",
+          "applied=" + kv.get("hero_none_applied", "?"))
     # 表头
     h1, h2 = kv.get("header_in_level", ""), kv.get("header_no_level", "")
     check("nil" not in h1 and "nil" not in h2, "表头从不打印 nil", "%s / %s" % (h1[:40], h2[:40]))
@@ -509,13 +571,17 @@ def main():
     # 精简版**应该**有的（金币/生命/无限金钱 + 敌人血量/移速 + 星星/升级树）
     for want in ("gold_add", "gold_sub", "lives_add", "lives_sub", "hold",
                  "hold_lives", "next_wave", "enemy_hp", "enemy_speed",
-                 "stars_max", "unlock_tree", "close"):
+                 "stars_max", "unlock_tree",
+                 "hero_now_up", "hero_now_max", "close"):
         check(want in ids, "菜单含 " + want)
     # **不该**有的：删掉的那些必须真的不在 —— 免得哪天又把未验证的东西混回来
     for gone in ("tower_dmg", "tower_range", "tower_rate", "free_towers",
                  "all_towers", "kill_all", "hide_ui", "gems_add", "unlock_all",
                  "probe", "store", "api", "report", "snap", "diff", "shot",
-                 "level_gems_add"):
+                 "level_gems_add",
+                 # 曾经在「存档」组里和「塔与单位」组的即时项**同名并存**，
+                 # 结果玩家按错、以为功能坏了。英雄升级只留即时那一份。
+                 "hero_level_up", "hero_level_max"):
         check(gone not in ids, "精简版菜单里没有 " + gone)
 
     # 源码层面的硬约束（没有 DEV 开关、没有诊断、release_flags 已是 no-op）

@@ -225,7 +225,7 @@ local DIAG_ACTIONS = {
 local report, snapshot, diff_action, api_sweep
 local game_mod, balance_of, scale_table, mult_apply, mult_apply_live,
       free_towers_apply, all_towers_apply, hide_ui_apply, kill_all_enemies,
-      probe_dump, queue_slot_op
+      probe_dump, queue_slot_op, hero_try
 
 local function action(id, arg)
   if id == "gold_set" then
@@ -345,6 +345,9 @@ local function action(id, arg)
   elseif id == "probe" then
     local r = probe_dump()
     note(r) return r
+  elseif id == "hero_try" then
+    local r = hero_try()
+    note(r) return r
   elseif id == "shot" then
     -- 这个 LÖVE 构建没有 love.graphics.captureScreenshot，改为在帧末自己抓后缓冲
     S.want_shot = true
@@ -458,6 +461,250 @@ local function dump_tbl(t, path, depth, maxdepth, dst, cap)
     n = n + 1
   end
 end
+-- 英雄 / 等级 / 经验（2026-09-25 为「游戏内即时升级」探路）。
+-- 抽成函数是因为它有**两条调用路**：probe_dump（手动按菜单）和 report（自动报告，每 20 秒）。
+-- 只加在 probe_dump 里的话自动报告那条路永远不跑 —— 第一次探路正是这么失败的。
+-- 为什么要探：等级不落存档、只存经验，等级由 hero_xp_thresholds 推出；而「即时升级」要在
+-- 关卡里当场改运行时英雄，现有 dump 却是**抽样**的（hero_team[N].hero.* 只看得见 xp_queued）。
+local function hero_report(L, out)
+  local gs = game_mod("game_settings")
+  if gs then
+    out("")
+    out("=== game_settings hero_* / xp 阈值表 ===")
+    local hk = { "hero_xp_thresholds", "powers_xp_thresholds", "max_hero_ultimate_level",
+                 "default_hero_ultimate_level", "heroes_starting_level",
+                 "skill_points_for_hero_level", "hero_level_expected",
+                 "hero_level_multipliers_above", "hero_level_multipliers_below",
+                 "gems_xp_ratio", "gems_per_level" }
+    for i = 1, #hk do
+      local v = rawget(gs, hk[i])
+      if type(v) == "table" then
+        local vals = {}
+        for k2, v2 in pairs(v) do vals[#vals + 1] = tostring(k2) .. "=" .. tostring(v2) end
+        table.sort(vals)
+        out(("  %-30s {%s}"):format(hk[i], table.concat(vals, ", ")))
+      else
+        out(("  %-30s %s"):format(hk[i], tostring(v)))
+      end
+    end
+  end
+  local s2 = store_of()
+  out("")
+  if s2 and type(s2.hero_team) == "table" then
+    out("=== store.hero_team 全量（depth 5）===")
+    dump_tbl(s2.hero_team, "hero_team", 1, 5, L, 4000)
+  else
+    out("=== store.hero_team: 不在关卡内，或这关没有英雄 ===")
+  end
+end
+
+
+-- 关卡内即时升级的试验（2026-09-25）。
+-- ⚠️ 只对**未满级**的英雄动手：第一次探路时出战的是 gerald，而他早满级了，什么都测不出来。
+-- 教训是"先确认对象能不能被改"，不是"先写代码"。
+-- 参数形态不猜：nparams 直接问 debug.getinfo，再按几种形态逐个试、全部 pcall 住，
+-- 每种都记等级/经验/hp 的前后值；**等级一变就停手**，免得连升好几级。
+hero_try = function()
+  local L = { "### kr6 hero level-up trial v2 ###  clock=" .. tostring(os.time()) }
+  local function out(s) L[#L + 1] = s end
+  local NL = string.char(10)
+  local function flush() wf("_kr6_hero_up.txt", table.concat(L, NL) .. NL) end
+
+  local gs = game_mod("game_settings")
+  local thr = gs and rawget(gs, "hero_xp_thresholds")
+
+  local s = store_of()
+  if not s or type(s.hero_team) ~= "table" then
+    out("不在关卡内，或这关没有英雄")
+    flush()
+    return "hero trial: 不在关卡内（见 _kr6_hero_up.txt）"
+  end
+
+  local ctx = S.hero_ctx
+  out("游戏传过的中间实参 ctx = " ..
+      (type(ctx) == "table" and "已有" or "还没有 —— 先打一个敌人让游戏调一次"))
+  if type(ctx) == "table" and not S.hero_ctx_dumped then
+    S.hero_ctx_dumped = true
+    local d = {}
+    dump_tbl(ctx, "ctx", 1, 2, d, 40)
+    out("  ctx 内容: " .. table.concat(d, " | "))
+  end
+
+  local function hp_of(e) return (type(e.health) == "table") and e.health.hp_max or nil end
+  local function stat_of(h, field, lv)
+    local ls = rawget(h, "level_stats")
+    local row = (type(ls) == "table") and rawget(ls, field) or nil
+    return (type(row) == "table") and rawget(row, lv) or nil
+  end
+
+  local hit
+  for idx, e in pairs(s.hero_team) do
+    local h = (type(e) == "table") and rawget(e, "hero") or nil
+    if type(h) == "table" then
+      local lv, xp = h.level, h.xp
+      local f = rawget(h, "fn_level_up")
+      out("")
+      out(("===== hero_team[%s]  level=%s  xp=%s  hp_max=%s ====="):format(
+          tostring(idx), tostring(lv), tostring(xp), tostring(hp_of(e))))
+      local orig = S.hero_orig and S.hero_orig[tostring(idx)]
+      if type(orig) == "function" then
+        local ok_i, info = pcall(debug.getinfo, orig, "uS")
+        if ok_i and type(info) == "table" then
+          out(("  真实 fn_level_up: nparams=%s isvararg=%s @ %s:%s"):format(
+              tostring(info.nparams), tostring(info.isvararg),
+              tostring(info.short_src), tostring(info.linedefined)))
+        end
+      else
+        out("  （还没抓到原函数引用 —— 游戏调过一次就有了）")
+      end
+      if type(lv) ~= "number" or lv >= 10 then
+        out("  → level 已到上限 10，跳过")
+      elseif type(f) ~= "function" then
+        out("  fn_level_up 不是函数，跳过")
+      elseif type(ctx) ~= "table" then
+        out("  ⚠️ 还没有 ctx：先打一个敌人让游戏自己调一次 fn_level_up，再按这个")
+      else
+        out("  阶段1：重放游戏自己的调用  f(e, ctx, true)")
+        local lv0 = h.level
+        local ok1, err1 = pcall(f, e, ctx, true)
+        out(("    -> ok=%s err=%s   level %s->%s  hp_max=%s"):format(
+            tostring(ok1), tostring(err1):sub(1, 44),
+            tostring(lv0), tostring(h.level), tostring(hp_of(e))))
+        if h.level ~= lv0 then
+          out("    ✓✓ 阶段1命中：等级当场前进")
+          hit = "阶段1 = 直接重放 f(e, ctx, true)"
+        else
+          local nl = lv + 1
+          local want = stat_of(h, "hp_max", nl)
+          out(("  阶段2：自己把 level 写成 %s、xp 写成 %s（目标 hp_max=%s），再重放"):format(
+              tostring(nl), tostring(thr and thr[nl - 1]), tostring(want)))
+          h.level = nl
+          if thr and thr[nl - 1] then h.xp = thr[nl - 1] end
+          local hp0 = hp_of(e)
+          local ok2, err2 = pcall(f, e, ctx, true)
+          local hp1 = hp_of(e)
+          out(("    -> ok=%s err=%s   hp_max %s->%s%s"):format(
+              tostring(ok2), tostring(err2):sub(1, 44), tostring(hp0), tostring(hp1),
+              (want ~= nil and hp1 == want) and "   ✓✓ 属性对上了" or ""))
+          if want ~= nil and hp1 == want then
+            hit = "阶段2 = 先写 level/xp，再重放 f(e, ctx, true)"
+          else
+            out("    阶段2没对上。⚠️ level 已推进到 " .. tostring(h.level) ..
+                "，属性可能不同步 —— 看后续自动报告 hp_max 会不会自己跟上")
+          end
+        end
+      end
+    end
+  end
+  out("")
+  out("结论：" .. (hit and ("命中：" .. hit) or "未命中（看每步的 err 与前后值）"))
+  flush()
+  return "hero trial -> _kr6_hero_up.txt" .. (hit and "  [命中]" or "")
+end
+-- 按**实体**包装英雄自己的 fn_level_up，记录游戏调用它时的实参。
+-- 为什么必须这样：fn_level_up 是 per-hero 的脚本回调（connor 在 scripts_game.lua:13580，
+-- drakkan 在 11783），签名 3 个参数、且**只有第 3 个参数到位才会真的升级**（实测 f(e) 与
+-- f(e,lv+1) 都不报错但什么都不做）。参数含义靠猜没用，只能看游戏自己怎么调。
+-- 而"击杀敌人 → 等级追一级"正是游戏在调它，所以让玩家正常打就行。
+-- ⚠️ 装好立刻写一行 [installed]：上次没这行，导致"没装上"和"装上了但没调"分不清。
+local function install_hero_fn_hooks()
+  local s = store_of()
+  if not s or type(s.hero_team) ~= "table" then return false end
+  local function append(txt)
+    local f = io.open(save_dir() .. "_kr6_hero_calls.txt", "a")
+    if not f then return end
+    f:write(txt .. string.char(10))
+    f:close()
+  end
+  local n = 0
+  for idx, e in pairs(s.hero_team) do
+    local h = (type(e) == "table") and rawget(e, "hero") or nil
+    local f = (type(h) == "table") and h.fn_level_up or nil
+    if type(f) == "function" then
+      local key = "fnlvl_" .. tostring(idx) .. "_" .. tostring(e)
+      if not S.wrap_src[key] then
+        S.wrap_src[key] = true
+        rawset(h, "fn_level_up", function(...)
+          local argc = select("#", ...)
+          local a2 = select(2, ...)
+          -- ★ 把游戏自己传的**中间那个表**留一份：它就是"重放调用"要用的实参。
+          -- 不理解它是什么也能用（照抄游戏自己的调用），dump 一次更有价值。
+          -- 实测两个英雄在同一帧拿到的是**同一个表**，像是调用方每帧构造的上下文。
+          if type(a2) == "table" then
+            S.hero_ctx = a2
+            if not S.hero_ctx_dumped then
+              S.hero_ctx_dumped = true
+              local d = {}
+              dump_tbl(a2, "ctx", 1, 2, d, 40)
+              append("[ctx dump] " .. table.concat(d, " | "))
+            end
+          end
+          S.hero_orig = S.hero_orig or {}
+          S.hero_orig[tostring(idx)] = f     -- 原函数留一份：要问 debug.getinfo 得问它
+          local parts = {}
+          for a = 1, argc do
+            local v = select(a, ...)
+            local tv = type(v)
+            parts[a] = (tv == "table" and "表") or
+                       (tv == "string" and ('"' .. v .. '"')) or tostring(v)
+          end
+          local res = { pcall(f, ...) }
+          append(("f=%d hero_team[%s].fn_level_up(%d) [%s] -> ok=%s"):format(
+            S.frames, tostring(idx), argc, table.concat(parts, ", "), tostring(res[1])))
+          if res[1] then return res[2], res[3] end
+          error(res[2], 0)     -- 原样抛出：探针不该改变游戏的行为
+        end)
+        append(("[installed] hero_team[%s] fn_level_up 已包装  f=%d"):format(tostring(idx), S.frames))
+        n = n + 1
+      end
+    end
+  end
+  return n > 0
+end
+
+-- 把 script_utils 里那三个经验函数也包一层（模块级；如果游戏持有的是捕获的局部引用，
+-- 这些就永远不触发 —— 那本身也是有用的信息）。
+local function install_hero_mod_hooks()
+  local su = game_mod("script_utils")
+  if type(su) ~= "table" then return nil end
+  local function append(txt)
+    local f = io.open(save_dir() .. "_kr6_hero_calls.txt", "a")
+    if not f then return end
+    f:write(txt .. string.char(10))
+    f:close()
+  end
+  local targets = { "hero_gain_xp", "hero_gain_xp_from_skill", "hero_level_up" }
+  local n = 0
+  for i = 1, #targets do
+    local fname = targets[i]
+    local key = "hermod_" .. fname
+    local orig = rawget(su, fname)
+    if type(orig) == "function" and not S.wrap_src[key] then
+      S.wrap_src[key] = true
+      rawset(su, fname, function(...)
+        local argc = select("#", ...)
+        local parts = {}
+        for a = 1, argc do
+          local v = select(a, ...)
+          local tv = type(v)
+          parts[a] = (tv == "table" and ("table:" .. tostring(v))) or
+                     (tv == "string" and ('"' .. v .. '"')) or tostring(v)
+        end
+        local res = { pcall(orig, ...) }
+        append(("f=%d script_utils.%s(%d) [%s] -> ok=%s ret=%s,%s"):format(
+          S.frames, fname, argc, table.concat(parts, ", "),
+          tostring(res[1]), tostring(res[2]), tostring(res[3])))
+        if res[1] then return res[2], res[3] end
+        error(res[2], 0)
+      end)
+      append(("[installed] script_utils.%s 已包装  f=%d"):format(fname, S.frames))
+      n = n + 1
+    end
+  end
+  return n
+end
+
+
 local function scan(budget)
   local visits, found = 0, {}
   local seen = setmetatable({}, { __mode = "k" })
@@ -534,6 +781,7 @@ report = function(tag)
       out("")
     end
   end
+  hero_report(L, out)
   wf("_kr6_report_" .. tostring(tag) .. ".txt", table.concat(L, "\n") .. "\n")
   return "report(" .. tostring(tag) .. ")"
 end
@@ -1060,6 +1308,15 @@ probe_dump = function()
     out("=== game_settings: NOT LOADED ===")
   end
 
+  -- 英雄结构 + xp 阈值表（与自动报告共用同一个函数，见 hero_report）
+  hero_report(L, out)
+
+  -- ⚠️ 「包装函数」**不在这里**，挪到 tick 里了（见 install_hero_fn_hooks /
+  -- install_hero_mod_hooks）——按实体包装 per-hero 的 fn_level_up 才是主目标。
+  -- 理由：这一段只有手动按「转储」才会跑到，而调用日志必须**在游戏自己调用之前**就装好，
+  -- 才能记到实参。第一次探路正是死在这里 —— 自动报告走的是 report() 而不是 probe_dump()，
+  -- 所以这份代码一次都没执行，日志文件根本没生成。
+
   local s = store_of()
   out("")
   if s then
@@ -1444,6 +1701,7 @@ local MENU_TEXT = {
     gems_add = "宝石 +1000", stars_max = "星星拉满",
     unlock_all = "全部解锁", unlock_tree = "升级树补全",
     probe = "转储 balance / 实体",
+    hero_try = "★英雄当场升级试验",
     store = "转储 store", api = "导出接口图", report = "完整报告",
     snap = "数值快照", diff = "数值对比", shot = "截图",
     close = "关闭菜单",
@@ -1468,6 +1726,7 @@ local MENU_TEXT = {
     gems_add = "gems +1000", stars_max = "max stars",
     unlock_all = "unlock everything", unlock_tree = "fill upgrade trees",
     probe = "dump balance / entities",
+    hero_try = "★hero level-up trial",
     store = "dump store", api = "export API map", report = "full report",
     snap = "numeric snapshot", diff = "numeric diff", shot = "screenshot",
     close = "close menu",
@@ -1554,6 +1813,7 @@ local function menu_items()
       { id = "hdr_diag", label = L("hdr_diag"), header = true },
       { id = "level_gems_add", label = L("level_gems_add") },
       { id = "probe",    label = L("probe") },
+      { id = "hero_try", label = L("hero_try") },
       { id = "store",    label = L("store") },
       { id = "api",      label = L("api") },
       { id = "report",   label = L("report") },
@@ -1812,6 +2072,7 @@ local CMD_MAP = {
   levelgems = "level_gems_add",
   nextwave = "next_wave", store = "store", report = "report", api = "api",
   snap = "snap", diff = "diff", shot = "shot", probe = "probe",
+  herotry = "hero_try",
   freetowers = "free_towers", alltowers = "all_towers",
   killall = "kill_all", hideui = "hide_ui",
   gems = "gems_add", stars = "stars_max",
@@ -1866,6 +2127,18 @@ local function tick(source)
   if not S.slot_hooks_done then
     local n = install_slot_hooks()
     if n > 0 or (game_mod("storage") ~= nil) then S.slot_hooks_done = true end
+  end
+
+  -- 英雄调用日志。两条路都装：
+  --   ① 实体上那个 per-hero 的 fn_level_up（游戏"击杀→升级"时调的就是它，主目标）
+  --   ② script_utils 上那三个模块级函数（如果游戏持有的是捕获的局部引用，它们永不触发
+  --      —— 那本身也是有用的结论）
+  -- 每帧试（script_utils / 英雄实体都可能还没出现），装上就停。
+  install_hero_fn_hooks()
+  if not S.hero_mod_done then
+    local n = install_hero_mod_hooks()
+    if n and n > 0 then S.hero_mod_done = true
+    elseif game_mod("script_utils") ~= nil then S.hero_mod_done = true end
   end
 
   local now = os.time()

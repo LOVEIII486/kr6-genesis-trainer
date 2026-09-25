@@ -183,6 +183,10 @@ def main():
     ap.add_argument("--identity", default=DEFAULT_IDENTITY,
                     help="LOVE identity == save folder name (default: %(default)s)")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--payload",
+                    help="要部署哪个 payload（默认 src/_kr6trainer.lua）。"
+                         "实机探路时指向 src/_kr6trainer_lab.lua —— 诊断项只存在于 lab 版，"
+                         "精简版有源码级硬断言不许带诊断。")
     ap.add_argument("--release", action="store_true",
                     help="player build: drop the diagnostic menu items and the "
                          "periodic auto-report into the Steam-synced save dir")
@@ -210,7 +214,11 @@ def main():
           % (TARGET_MODULE, LUAC_NAME, len(blob)))
 
     shadow = open(os.path.join(SRC, "shadow_director.lua"), "rb").read()
-    payload = open(os.path.join(SRC, PAYLOAD_NAME), "rb").read()
+    payload_path = args.payload or os.path.join(SRC, PAYLOAD_NAME)
+    if not os.path.isfile(payload_path):
+        sys.exit("error: payload 不存在: %s" % payload_path)
+    payload = open(payload_path, "rb").read()
+    print("payload  : %s" % payload_path)
 
     if args.release:
         payload = _release_flags(payload.decode("utf-8")).encode("utf-8")
