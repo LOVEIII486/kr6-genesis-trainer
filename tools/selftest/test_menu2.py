@@ -227,21 +227,24 @@ def build_harness(release=False):
     w('             levels = { [1] = { stars = 2 }, [2] = { stars = 1 } },')
     # 存档里升级树是**数组**（{ "l1" }），不是字典 —— 写成 { l1 = "l1" } 就不是
     # 存档的形状了，测试会假过。
-    # ⚠️ 节点名有**两套**，别混：防御塔树是 l1/l2/l3a…/ulti，英雄树是 skill_a/skill_b/upg_a。
-    # 依据是两份**模组动手之前**的存档（09-24 22:26 的 slot1.lua、09-25 10:38 的备份）：
-    # archers=[l1]、artillery=[l1,l2]、hero_gerald 与 hero_zefira=[skill_a,skill_b,upg_a]。
-    # 把塔的节点名写进英雄树 = 改英雄风格，出过问题；skill_c/talent_*/upg_b/ultimate
-    # 这类名字在任何存档里都不存在，是编出来的。别再写回来。
-    w('             upgrades_trees = { archers = { "l1" },')
-    w('                                hero_gerald = {},')
-    w('                                hero_zefira = { "skill_a" },')
-    w('                                tower_wizard = {} },')
+    # ⚠️ 三类树的节点名**各不相同**（塔 7 个 / 法术 8 个 / 英雄 17 个），详见 ENGINE_NOTES
+    # 的「升级树」一节。**跨类写就是坏档** —— v4 把塔的节点名写进英雄树，v5 写进法术树，
+    # 都出过问题。这里的 fixture 故意三种混着放（含两个错写的节点），钉住"只碰自己那类"。
+    w('             upgrades_trees = {')
+    w('               archers = { "l1" },')                          # 塔树：补成 7 个
+    w('               power_rain_of_fire = { "l2b", "l1" },')         # 法术树：留 l2b、删错写的 l1
+    w('               hero_gerald = {},')                             # 空英雄树：补满
+    w('               hero_zefira = { "skill_a", "talent_2", "l2" },')  # 留 talent_2、删错写的 l2
+    w('               tower_wizard = {} },')                          # 游戏从不写的槽位：谁也不许碰
     w('             towers = { status = { archers = true, wizard = true },')
     w('                        selected = { "archers" } },')
     # heroes.status 的每个英雄是**表**（{ skills, xp }），不是布尔 —— 写成 true 的话
     # 英雄升级 op 会抛错被 pcall 吞掉，测试照样通过（假过）。selected 是「出战英雄」。
     w('             heroes = { status = { hero_a = { xp = 2865 }, hero_b = { xp = 0 } },')
     w('                        selected = "hero_a", team = { "hero_a" } },')
+    w('             powers = { status = { rain_of_fire = { xp = 300 },')
+    w('                                  musketeers = { xp = 0 } },')
+    w('                        selected = { "rain_of_fire" } },')
     w('             progression = { last_stars = 0 } }')
     w('  end')
     # 指纹：不满足 gems/levels/upgrades_trees 的表一律不认（否则会误改别的表）
@@ -261,37 +264,37 @@ def build_harness(release=False):
     w('  say(' + Q + 'stars_total' + Q + ', total)')
     w('  say(' + Q + 'last_stars_untouched' + Q + ', t2.progression.last_stars)')
     w('  say(' + Q + 'ops_cleared' + Q + ', #S.slot_ops)')
-    # 升级树：非英雄树（塔树 + tower_*/power_*）补全；英雄树**一个字节都不动**。
+    # ---- 三类升级树各走各的节点名，**只能按树种类分别填**（塔的节点名写进法术树/英雄树
+    # 是坏档 —— v4/v5 就是这么坏的）。每个 op 都断言：自己那类补对 + 另外两类一个字没动。
+    w('  local function nodes_of(arr)')
+    w('    local t = {}')
+    w('    for _, v in pairs(arr or {}) do t[#t+1] = tostring(v) end')
+    w('    table.sort(t)')
+    w('    return table.concat(t, ' + Q + ',' + Q + ')')
+    w('  end')
     w('  S.slot_ops = {}')
     w('  queue_op({ op = ' + Q + 'tree' + Q + ' })')
     w('  local t3 = mk_slot()  S.slot_apply(t3)')
-    # 升级树在存档里是**数组**，节点名是「值」不是「键」—— 要点名检查不能写 arr.ulti。
-    w('  local function has_val(arr, v)')
-    w('    for _, x in pairs(arr) do if tostring(x) == v then return true end end')
-    w('    return false')
-    w('  end')
-    w('  local function alen(arr) local n = 0')
-    w('    while arr[n + 1] ~= nil do n = n + 1 end return n end')
-    w('  local tr = t3.upgrades_trees')
-    w('  say(' + Q + 'tree_tower_filled' + Q + ',')
-    w('    has_val(tr.archers, ' + Q + 'ulti' + Q + ') and')
-    w('    has_val(tr.archers, ' + Q + 'l3a' + Q + ') and')
-    w('    has_val(tr.tower_wizard, ' + Q + 'ulti' + Q + '))')
-    w('  say(' + Q + 'tree_hero_untouched' + Q + ',')
-    w('    (alen(tr.hero_gerald) == 0) and')
-    w('    (alen(tr.hero_zefira) == 1) and')
-    w('    has_val(tr.hero_zefira, ' + Q + 'skill_a' + Q + ') and')
-    w('    (not has_val(tr.hero_zefira, ' + Q + 'l1' + Q + ')))')
-    # ★ 绝不能写入游戏里不存在的节点名（skill_c / talent_* / upg_b / ultimate）——
-    # 编节点名曾经弄坏过存档，这是这份断言存在的唯一理由。
-    w('  local bogus = { "skill_c", "talent_1", "talent_2", "upg_b", "ultimate" }')
-    w('  local nbad = 0')
-    w('  for _, arr in pairs(tr) do')
-    w('    for _, v in ipairs(bogus) do')
-    w('      if has_val(arr, v) then nbad = nbad + 1 end')
-    w('    end')
-    w('  end')
-    w('  say(' + Q + 'tree_no_bogus' + Q + ', nbad)')
+    w('  say(' + Q + 'tree_tower' + Q + ', nodes_of(t3.upgrades_trees.archers))')
+    w('  say(' + Q + 'tree_tower_power' + Q + ', nodes_of(t3.upgrades_trees.power_rain_of_fire))')
+    w('  say(' + Q + 'tree_tower_hero' + Q + ', nodes_of(t3.upgrades_trees.hero_zefira))')
+    w('  say(' + Q + 'tree_tower_slot' + Q + ', nodes_of(t3.upgrades_trees.tower_wizard))')
+    # 法术升满：**经验先拉满**（点数按等级发，只填树会变负数 —— 玩家实测），再填一条完整路径。
+    w('  S.slot_ops = {}')
+    w('  queue_op({ op = ' + Q + 'power_max' + Q + ' })')
+    w('  local t4 = mk_slot()  S.slot_apply(t4)')
+    w('  say(' + Q + 'power_xp_raised' + Q + ', t4.powers.status.rain_of_fire.xp)')
+    w('  say(' + Q + 'power_xp_other' + Q + ', t4.powers.status.musketeers.xp)')
+    w('  say(' + Q + 'power_tree' + Q + ', nodes_of(t4.upgrades_trees.power_rain_of_fire))')
+    w('  say(' + Q + 'power_tower_untouched' + Q + ', nodes_of(t4.upgrades_trees.archers))')
+    w('  say(' + Q + 'power_hero_untouched' + Q + ', nodes_of(t4.upgrades_trees.hero_zefira))')
+    # 读不到经验表就**整条不做**（宁可不填树，也不造负点数）
+    w('  S.slot_ops = {}')
+    w('  local np = mk_slot()')
+    w('  np.powers = nil')
+    w('  queue_op({ op = ' + Q + 'power_max' + Q + ' })')
+    w('  say(' + Q + 'power_nostatus_applied' + Q + ', S.slot_apply(np))')
+    w('  say(' + Q + 'power_nostatus_tree' + Q + ', nodes_of(np.upgrades_trees.power_rain_of_fire))')
 
     # 英雄升级：只动**出战英雄**（heroes.selected），别的英雄一个字段都不许变。
     # 这里测 max 模式 —— 它不依赖任何未验证的东西（next 模式要读 game_settings 里那张
@@ -589,15 +592,42 @@ def main():
     check(kv.get("last_stars_untouched") == "0",
           "故意不动 progression.last_stars（游戏靠它发现新星星并发放内容）",
           "last_stars=" + kv.get("last_stars_untouched", "?"))
-    check(kv.get("tree_tower_filled") == "true",
-          "升级树补全：塔树（含空的 tower_* 树）补到 ulti",
-          kv.get("tree_tower_filled", "?"))
-    check(kv.get("tree_hero_untouched") == "true",
-          "英雄树一个字节都不动（空的没填、已有的原样留着、塔节点名没写进去）",
-          kv.get("tree_hero_untouched", "?"))
-    check(kv.get("tree_no_bogus") == "0",
-          "没有写入游戏里不存在的节点名（skill_c/talent_*/upg_b/ultimate）",
-          "bogus=" + kv.get("tree_no_bogus", "?"))
+    # ---- 升级树：三类树的节点名**各不相同**，每个 op 只能碰自己那一类。
+    # 集合断言，不是计数断言 —— 差一个名字就该红。
+    TOWER_T = {"l1", "l2", "l3a", "l3b", "l4a", "l4b", "ulti"}
+    # 英雄树现在是**禁区**：技能点由等级给（skill_points_for_hero_level），树上的节点不是
+    # 解锁技能的路子 —— 实测填了不生效，用户决定不做。这条钉住"两个 op 都不许碰它"。
+    HERO_TOUCH = {"skill_a", "talent_2", "l2"}
+
+    def nodes(key):
+        return set(x for x in (kv.get(key) or "").split(",") if x)
+
+    check(nodes("tree_tower") == TOWER_T, "塔树升满：补成 7 个真实节点",
+          kv.get("tree_tower", "?"))
+    check(nodes("tree_tower_power") == {"l2b", "l1"},
+          "塔树升满**不碰法术树**（塔的节点名写进法术树就是坏档）",
+          kv.get("tree_tower_power", "?"))
+    check(nodes("tree_tower_hero") == HERO_TOUCH, "塔树升满不碰英雄树",
+          kv.get("tree_tower_hero", "?"))
+    check(nodes("tree_tower_slot") == set(),
+          "tower_* 槽位游戏自己从不写（那是另一套机制），一个字都不碰",
+          kv.get("tree_tower_slot", "?"))
+    # 法术升满：经验先拉满（点数按等级发），再填一条完整路径，清掉错写的 l1
+    check(int(kv.get("power_xp_raised", "0")) > 300,
+          "法术升满：把经验抬到阈值之上（点数靠等级发，不能只填树）",
+          "xp=" + kv.get("power_xp_raised", "?"))
+    check(int(kv.get("power_xp_other", "0")) > 0, "法术升满是所有法术，不只出战的",
+          "xp=" + kv.get("power_xp_other", "?"))
+    check(nodes("power_tree") == {"l2b", "l3", "l4a", "l5a", "l6"},
+          "法术升满：保住已有的 l2b，补成一条完整路径，错写的 l1 被清掉",
+          kv.get("power_tree", "?"))
+    check(nodes("power_tower_untouched") == {"l1"}, "法术升满不碰塔树",
+          kv.get("power_tower_untouched", "?"))
+    check(nodes("power_hero_untouched") == HERO_TOUCH, "法术升满不碰英雄树",
+          kv.get("power_hero_untouched", "?"))
+    check(kv.get("power_nostatus_applied") == "0" and nodes("power_nostatus_tree") == {"l1", "l2b"},
+          "读不到法术经验表时**整条不做**（宁可不填树，也不造负点数）",
+          kv.get("power_nostatus_tree", "?"))
     # 英雄升级
     check(int(kv.get("hero_xp_raised", "0")) > 2865, "英雄拉满把出战英雄的经验抬高",
           "xp=" + kv.get("hero_xp_raised", "?"))
@@ -629,7 +659,7 @@ def main():
     # 精简版**应该**有的（金币/生命/无限金钱 + 敌人血量/移速 + 星星/升级树）
     for want in ("gold_add", "gold_sub", "lives_add", "lives_sub", "hold",
                  "hold_lives", "next_wave", "enemy_hp", "enemy_speed",
-                 "stars_max", "unlock_tree",
+                 "stars_max", "unlock_tree", "power_max",
                  "hero_now_up", "hero_now_max", "close"):
         check(want in ids, "菜单含 " + want)
     # **不该**有的：删掉的那些必须真的不在 —— 免得哪天又把未验证的东西混回来

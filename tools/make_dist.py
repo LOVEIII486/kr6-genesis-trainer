@@ -90,7 +90,7 @@ def release_build(z, n):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    ap.add_argument("--version", default="5", help="发版号（**发新版时记得改这里**，"
+    ap.add_argument("--version", default="6", help="发版号（**发新版时记得改这里**，"
                     "否则会静默覆盖上一版的同名文件）")
     ap.add_argument("--dev", action="store_true",
                     help="full source snapshot instead of the release build")

@@ -12,8 +12,8 @@ kr6-trainer 安装器。
     python install.py --release         # 玩家版：去掉诊断工具
     python install.py --save-dir "C:\\tmp\\test"    # 测试用
 
-装完启动游戏，按 Home 打开菜单。**不是 F1** —— F1–F3 是玩家的物品键，
-这游戏不该有 F 键热键。
+装完启动游戏，按 Home 或 Tab 打开菜单（有些键盘没有 Home 键）。
+**别用 F 键** —— F1–F3 是玩家的物品键，而且笔记本上 F 键多半被固件占成媒体键。
 """
 import argparse
 import os
@@ -247,10 +247,10 @@ def main():
     print("""
 done. Now:
   1. launch Kingdom Rush Genesis
-  2. press Home in game to open the trainer menu
+  2. press Home or Tab in game to open the trainer menu
      (up/down select, left/right adjust, enter run, esc close; mouse works too)
-     NOTE: it is Home, not F1 - this game has no F-key hotkeys on purpose
-     (F1-F3 are the player's item keys).
+     NOTE: not an F-key - F1-F3 are the player's item keys, and on laptops the
+     F-row is usually claimed by firmware (media keys).
 
 to remove it again:  python uninstall.py --save-dir "%s"
 """ % save_dir)

@@ -172,7 +172,7 @@ end
 -- 前向声明：action() 调的这几个函数定义在文件更下面（否则解析成同名全局变量 = 静默失效）。
 -- 定义处**必须**写成 `名字 = function() ... end`，写成 `local function` 这里仍是 nil。
 local game_mod, balance_of, scale_table, mult_apply, mult_apply_live, queue_slot_op
-local na, hero_thresholds, hero_raise
+local na, hero_thresholds, power_thresholds, hero_raise
 
 local function action(id, arg)
   if id == "gold_set" then
@@ -238,7 +238,9 @@ local function action(id, arg)
     -- 加载时的归属校验 deselect_unowned_units 清掉。
     return queue_slot_op({ op = "stars" }, "星星拉满", "max stars")
   elseif id == "unlock_tree" then
-    return queue_slot_op({ op = "tree" }, "升级树补全", "fill upgrade trees")
+    return queue_slot_op({ op = "tree" }, "塔树升满", "max tower trees")
+  elseif id == "power_max" then
+    return queue_slot_op({ op = "power_max" }, "法术升满", "max powers")
   elseif id == "hero_now_up" or id == "hero_now_max" then
     -- 关卡内即时升级。失败时用 na()（**不含 "FAIL"**，冒烟测试把含 FAIL 的回复算失败）。
     local msg, why = hero_raise(id == "hero_now_max" and "max" or "next")
@@ -533,7 +535,16 @@ local REWARD_LAST_STARS = 84
 
 -- 升级树节点。存档里是短 id，kr6/upgrades.lua 里带前缀（archers_l1），两套不能混。
 -- 防御塔树和英雄树用的是**同一套** id；别的节点名游戏里没有。
-local UPGRADE_NODES = { "l1", "l2", "l3a", "l3b", "l4a", "l4b", "ulti" }
+-- 三类升级树的节点名**各不相同**（从游戏 kr6/upgrades.lua 的 id 池解出，再用游戏自己写进
+-- 存档的节点交叉验证过）。存档里存的是**短 id** —— 树前缀去掉后的那截。
+local TOWER_TREE_KEYS = { archers = true, artillery = true, barracks = true, mages = true }
+local TOWER_NODES = { "l1", "l2", "l3a", "l3b", "l4a", "l4b", "ulti" }
+-- 法术树：2/4/5 层各是二选一（a|b），3/6 层单节点 —— 满树 = 一条完整路径 5 个。
+local POWER_NODES = { "l2a", "l3", "l4a", "l5a", "l6" }
+local POWER_PAIRS = { { "l2a", "l2b" }, { "l4a", "l4b" }, { "l5a", "l5b" } }
+-- 在**别的**树种类里合法、但在法术树里一定是写错的名字（旧版把塔的节点名写了进来）。
+-- ⚠️ 别把 l4a/l4b 算进来 —— 那两个法术树本来就有。
+local POWER_WRONG = { l1 = true, l2 = true, l3a = true, l3b = true, ulti = true }
 
 -- 存档里的数组按 1..n 存但可能稀疏，所以不能用 #。
 local function slot_array_len(t)
@@ -550,18 +561,42 @@ local function slot_array_has(t, v)
   return false
 end
 
--- 把 arr 补成 UPGRADE_NODES 里缺的那些。
-local function fill_node_array(arr)
-  if type(arr) ~= "table" then return 0 end
-  local n = slot_array_len(arr)
-  local added = 0
-  for i = 1, #UPGRADE_NODES do
-    if not slot_array_has(arr, UPGRADE_NODES[i]) then
-      arr[n + added + 1] = UPGRADE_NODES[i]
+-- 补全一棵树：pairs 里那些二选一的层级，**已有哪个就留哪个**（都没有才填第一个），
+-- 其余节点缺什么补什么；wrong 里的名字先删掉。返回 (补了几个, 删了几个)。
+local function fill_tree(arr, nodes, pairs, wrong)
+  if type(arr) ~= "table" then return 0, 0 end
+  local removed = 0
+  if wrong then
+    local keep, n = {}, slot_array_len(arr)
+    for i = 1, n do
+      local v = arr[i]
+      if type(v) == "string" and wrong[v] then
+        removed = removed + 1
+      else
+        keep[#keep + 1] = v
+      end
+    end
+    if removed > 0 then
+      for i = n, 1, -1 do arr[i] = nil end
+      for i = 1, #keep do arr[i] = keep[i] end
+    end
+  end
+  local skip = {}
+  if pairs then
+    for i = 1, #pairs do
+      local a, b = pairs[i][1], pairs[i][2]
+      if slot_array_has(arr, a) or slot_array_has(arr, b) then skip[a], skip[b] = true, true end
+    end
+  end
+  local added, n = 0, slot_array_len(arr)
+  for i = 1, #nodes do
+    local v = nodes[i]
+    if not skip[v] and not slot_array_has(arr, v) then
+      arr[n + added + 1] = v
       added = added + 1
     end
   end
-  return added
+  return added, removed
 end
 
 local function stars_total(t)
@@ -597,6 +632,13 @@ end
 hero_thresholds = function()
   local gs = game_mod("game_settings")
   local thr = gs and rawget(gs, "hero_xp_thresholds")
+  return (type(thr) == "table") and thr or nil
+end
+
+-- 法术的经验阈值表（同名同源，也在 game_settings 里）。读不到就返回 nil —— 上层会拒绝执行。
+power_thresholds = function()
+  local gs = game_mod("game_settings")
+  local thr = gs and rawget(gs, "powers_xp_thresholds")
   return (type(thr) == "table") and thr or nil
 end
 
@@ -710,11 +752,34 @@ local function apply_one_op(t, o)
   elseif op == "tree" then
     local tr = rawget(t, "upgrades_trees")
     if type(tr) ~= "table" then return false end
-    -- 英雄树用的是另一套节点名（skill_a/skill_b/upg_a），填塔的节点名等于改英雄风格 —— 不碰。
+    -- tower_* 那 16 个槽位游戏自己从不写（它的 tower_x_lvl1..4 是另一套机制），一律不碰。
     for k, arr in pairs(tr) do
-      if type(k) ~= "string" or k:sub(1, 5) ~= "hero_" then fill_node_array(arr) end
+      if type(k) == "string" and TOWER_TREE_KEYS[k] then fill_tree(arr, TOWER_NODES) end
     end
     return true
+  elseif op == "power_max" then
+    -- 法术**光填树会变成负点数**（玩家实测）：点数按等级发（upgrades.lua 的
+    -- get_points_by_level），买树上的节点花的就是它（get_spent_points）。所以先把等级
+    -- 拉满 —— 经验写到阈值表顶以上，游戏读档时自己按经验重算等级并补发点数（和英雄拉满
+    -- 同一条路），再填树。阈值表读不到就**整条失败、不填树**：宁可不做，也不造负点数。
+    local ps = rawget(t, "powers")
+    local st = (type(ps) == "table") and rawget(ps, "status") or nil
+    if type(st) ~= "table" then return false end
+    local thr = power_thresholds()
+    local top = thr and thr_top(thr)
+    local tr = rawget(t, "upgrades_trees")
+    local n = 0
+    for id, e in pairs(st) do
+      if type(id) == "string" and type(e) == "table"
+         and type(rawget(e, "xp")) == "number" then
+        e.xp = (top or e.xp) + 10000
+        n = n + 1
+        if type(tr) == "table" then
+          fill_tree(rawget(tr, "power_" .. id), POWER_NODES, POWER_PAIRS, POWER_WRONG)
+        end
+      end
+    end
+    return n > 0
   elseif op == "hero_level" then
     -- 故意不挂菜单（英雄升级走「英雄」组的即时路径 hero_raise）。
     -- 留着这条 op 是因为单元测试用它钉住「结构化失败不能被算成成功」这条不变量。
@@ -856,7 +921,7 @@ local MENU_TEXT = {
     hdr_hero = "英雄",
     hdr_save = "存档（回主菜单再进档生效）",
     enemy_hp = "敌人血量", enemy_speed = "敌人移速",
-    stars_max = "星星拉满", unlock_tree = "升级树补全",
+    stars_max = "星星拉满", unlock_tree = "塔树升满", power_max = "法术升满",
     hero_now_up = "英雄升一级（本关立即）", hero_now_max = "英雄拉满（本关立即）",
     close = "关闭菜单",
     on = "开", off = "关",
@@ -873,7 +938,7 @@ local MENU_TEXT = {
     hdr_hero = "HEROES",
     hdr_save = "SAVE (apply on reload)",
     enemy_hp = "enemy HP", enemy_speed = "enemy speed",
-    stars_max = "max stars", unlock_tree = "fill upgrade trees",
+    stars_max = "max stars", unlock_tree = "max tower trees", power_max = "max powers",
     hero_now_up = "hero +1 level (now)", hero_now_max = "hero max (now)",
     close = "close menu",
     on = "ON", off = "OFF",
@@ -943,6 +1008,7 @@ local function menu_items()
     { id = "hdr_save", label = L("hdr_save"), header = true },
     { id = "stars_max",  label = L("stars_max") },
     { id = "unlock_tree", label = L("unlock_tree") },
+    { id = "power_max",  label = L("power_max") },
     -- 英雄升级不在这组（排队式），在下面的「英雄」组，即时生效。
   }
   items[#items + 1] = { id = "close", label = L("close") }
