@@ -74,6 +74,14 @@ end
 if type(S.gold) ~= "table" then S.gold = { mult = 1 } end
 if type(S.gold.mult) ~= "number" then S.gold.mult = 1 end
 if type(S.gold_base) ~= "table" then S.gold_base = {} end
+-- 防御塔的射程 / 攻速倍率，以及「每座塔已经乘上去的倍率」。
+-- 弱键：塔被拆或升级后表被回收，记录跟着释放，不会越攒越多。
+if type(S.tower) ~= "table" then S.tower = { range = 1, rate = 1 } end
+if type(S.tower.range) ~= "number" then S.tower.range = 1 end
+if type(S.tower.rate) ~= "number" then S.tower.rate = 1 end
+if type(S.tower_seen) ~= "table" then
+  S.tower_seen = setmetatable({}, { __mode = "k" })
+end
 -- 存档钩子的登记表与待应用的存档操作队列
 if type(S.slot_hooks) ~= "table" then S.slot_hooks = {} end
 if type(S.slot_ops) ~= "table" then S.slot_ops = {} end
@@ -294,6 +302,13 @@ local function action(id, arg)
     local cn = ({ enemy_hp = "敌人血量", enemy_speed = "敌人移速" })[id] or id
     note(cn .. " x" .. tostring(v) .. "（←→ 调整）", id .. " = x" .. tostring(v))
     return id .. " = x" .. tostring(v)
+  elseif id == "tower_range" then
+    -- 和 enemy_hp / enemy_speed 同款：可调行本身没有"执行"语义，给一个**只读**查询
+    -- （冒烟测试会用空参跑遍全菜单），调整走 ←→。
+    local v = S.tower.range
+    local r = "塔射程 x" .. tostring(v) .. "（←→ 调整）"
+    note(r, "tower range = x" .. tostring(v))
+    return "tower_range = x" .. tostring(v)
   elseif id == "close" then
     S.menu_open = false
     return "closed"
@@ -706,6 +721,70 @@ end
 
 
 
+-- 防御塔的射程 / 攻速。
+--
+-- ⚠️ 目前**只有射程摆上了菜单**，攻速没有（S.tower.rate 恒为 1）。原因见 menu_items 里
+-- 「防御塔」那一组的注释：攻速受射击动画时长限制，调快很快就不起作用。
+-- 这一半代码保留是因为它是对的、也有测试钉着，将来要放开只需加一行菜单项。
+--
+-- 两个字段都在**活塔实体的 attacks 上**，而且选敌那一刻现读
+-- （源码：kr6/scripts_game.lua 各塔的 update 里 `local a = this.attacks` → `a.range`）：
+--     a.range                 ← tt.attacks.range   = b.basic_attack.range[级]
+--     a.list[i].cooldown      ← tt.attacks.list[1].cooldown
+-- ⚠️ **不是** balance.towers.<名>.stats.{range,cooldown} —— 那个只喂 UI 数字
+-- （tt.info.stat_range），老版本就是缩它，所以改完只有面板变、实际打不到更远。
+--
+-- 用**相对缩放**、不记基线：游戏的 range_factor 升级修饰器是乘法 buff
+-- （insert 时乘、remove 时除，kr6/scripts_game.lua:25933 一带）。记基线会把 buff
+-- 生效期间的值错记成基线，buff 结束后射程永久虚高。记「已经乘上去的倍率」就没这问题，
+-- 而且塔升级会重建实体 → 新表没记录 → 按完整倍率乘一次，天然覆盖升级。
+local TOWER_ONE = { range = 1, rate = 1 }
+
+-- 把 from 的倍率换成 to 的（乘一次差值）。攻速是"越大越快"，落在冷却上要取倒数。
+local function tower_rescale(a, from, to)
+  if type(a.range) == "number" then
+    local f = to.range / from.range
+    if f ~= 1 then a.range = a.range * f end
+  end
+  local fc = from.rate / to.rate          -- 冷却该乘的倍数 = 攻速倍数的倒数
+  if fc ~= 1 then
+    local list = rawget(a, "list")
+    -- pairs 不用 #：容器形状没实证，稀疏表的 `#` 会返回 0（这仓库踩过）
+    if type(list) == "table" then
+      for _, at in pairs(list) do
+        if type(at) == "table" and type(at.cooldown) == "number" then
+          at.cooldown = at.cooldown * fc
+        end
+      end
+    end
+  end
+end
+
+local function tower_apply()
+  local s = store_of()
+  if not s then return 0 end
+  local want = S.tower
+  local n = 0
+  each_entity(s, function(e)
+    local nm = tpl_name(e)
+    -- tower_holder_* 是**空建造位**（没有 attacks），跳过
+    if nm:sub(1, 6) == "tower_" and not nm:find("holder", 1, true) then
+      local a = rawget(e, "attacks")
+      if type(a) == "table" then
+        local got = S.tower_seen[a]
+        -- 比**值**不比表：存的是副本，同一张表比较恒不相等，会每帧重乘
+        if not got or got.range ~= want.range or got.rate ~= want.rate then
+          tower_rescale(a, got or TOWER_ONE, want)
+          S.tower_seen[a] = { range = want.range, rate = want.rate }
+          n = n + 1
+        end
+      end
+    end
+    return 0
+  end)
+  return n
+end
+
 -- 存档层：游戏内改进度（宝石/星星/解锁）
 -- 存档不常驻内存（异步文件 IO），但**总得**经过「文本 → Lua 表」和「Lua 表 → 文本」两个
 -- 转换，在那两个函数上钩一道即可。⚠️ 待办表 S.slot_ops 是**一次性**的：命中一次存档表就
@@ -1033,6 +1112,7 @@ end
 -- 暴露给测试台：测试环境里没有 storage 模块、钩子装不上，而存档改写必须能单独测。
 S.mult_live = mult_apply_live        -- 暴露给测试台：倍率那条在测试里要能单独调
 S.mult_apply = mult_apply            -- 模板那条（测试台没有 entity_db，直接喂一张假模板表）
+S.tower_apply_fn = tower_apply       -- 塔射程/攻速那条（测试台喂假的塔实体）
 S.nocd_clear_buttons = clear_button_list   -- 测试台没有 game_gui，直接喂几个假按钮
 S.nocd_clear_entity = clear_entity_cds     -- 同上：英雄/塔那条
 S.nocd_restore = nocd_restore              -- 关掉开关时要能还原（可逆性测试）
@@ -1117,9 +1197,11 @@ local MENU_TEXT = {
     gold_mult = "击杀金币倍率",
     next_wave = "立刻下一波",
     hdr_res = "资源", hdr_wave = "波次", hdr_units = "敌人属性",
+    hdr_tower = "防御塔",
     hdr_hero = "英雄",
     hdr_save = "存档（回主菜单再进档生效）",
     enemy_hp = "敌人血量", enemy_speed = "敌人移速",
+    tower_range = "塔射程",
     stars_max = "星星拉满", unlock_tree = "塔树升满", power_max = "法术升满",
     hdr_cd = "技能冷却",
     nocd_power = "法术无CD", nocd_hero = "英雄技能无CD", nocd_tower = "塔技能无CD",
@@ -1139,9 +1221,11 @@ local MENU_TEXT = {
     gold_mult = "kill gold mult",
     next_wave = "next wave now",
     hdr_res = "RESOURCES", hdr_wave = "WAVES", hdr_units = "ENEMY STATS",
+    hdr_tower = "TOWERS",
     hdr_hero = "HEROES",
     hdr_save = "SAVE (apply on reload)",
     enemy_hp = "enemy HP", enemy_speed = "enemy speed",
+    tower_range = "tower range",
     stars_max = "max stars", unlock_tree = "max tower trees", power_max = "max powers",
     hdr_cd = "COOLDOWNS",
     nocd_power = "no power cooldown", nocd_hero = "no hero skill cd",
@@ -1212,6 +1296,20 @@ local function menu_items()
     { id = "enemy_speed", label = L("enemy_speed"),
       adjust = { set = M, key = "enemy_speed", step = 0.25, sign = 1, min = 0.1, max = 10 },
       value = function() return fmt_mult(S.mult.enemy_speed) end },
+    -- 防御塔。字段在**活塔实体**上（attacks.range / attacks.list[].cooldown），选敌时现读，
+    -- 所以改完立刻生效；塔升级会重建实体，那种新表由 tower_apply 自己补上。
+    -- ⚠️ 不是 balance.towers.*.stats.*（那个只喂 UI 数字，老版本栽在这）。
+    -- ⚠️ 只有射程**没有攻速**：攻速那条实测是通的（把倍率调低塔会明显变慢），但**调高
+    -- 很快就不起作用** —— 塔自己只设标志位，真正射击的是 shooter_controller，它在生成
+    -- 子弹后要 `U.y_animation_wait` **等射击动画播完**才处理下一次，所以周期是
+    -- `max(cooldown, 动画时长)`。箭塔 4 级 cooldown 已经 0.6s，和动画地板基本持平，
+    -- 再调就没用了。底层支持还在（S.tower.rate + tower_rescale 的倒数那半），
+    -- 只是不摆上菜单 —— 详见 HANDOFF「防御塔射程 / 攻速」。
+    { id = "hdr_tower", label = L("hdr_tower"), header = true },
+    { id = "tower_range", label = L("tower_range"),
+      adjust = { set = S.tower, key = "range", step = 0.25, sign = 1, min = 0.1, max = 10 },
+      value = function() return fmt_mult(S.tower.range) end },
+
     -- 英雄**单独一组**：它们和上面那两项（敌人属性倍率）不是一回事 ——
     -- 倍率是本关临时改数值，英雄升级会经游戏自己写回档案。混在一起标签会撒谎。
     { id = "hdr_hero",  label = L("hdr_hero"), header = true },
@@ -1596,6 +1694,17 @@ local function tick(source)
   end
   -- 场上的单位走相对法、自己判断倍率变没变；无条件调用是故意的（调回 1 也要跟着回来）。
   pcall(mult_apply_live)
+
+  -- 防御塔的射程/攻速：同一套「开着就跑、关掉补跑一趟收尾」。
+  -- 收尾那趟不能省：守卫条件已变假，不补跑就永远停在放大后的值上。
+  local tw = S.tower
+  if tw.range ~= 1 or tw.rate ~= 1 then
+    pcall(tower_apply)
+    S.tower_active = true
+  elseif S.tower_active then
+    pcall(tower_apply)
+    S.tower_active = false
+  end
 
   -- 存档钩子：storage 在 payload 加载时可能还没 require，所以每帧试装一次、装上就不再试。
   if not S.slot_hooks_done then

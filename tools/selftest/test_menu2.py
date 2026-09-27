@@ -247,6 +247,44 @@ def build_harness(release=False):
     w('  fake_systems.health:on_update(0, 0, store)')
     w('  say(' + Q + 'gold_kill_off' + Q + ', seen_health)')
     w('  say(' + Q + 'gold_restored' + Q + ', GS.gold_enemy_factor_per_mode[1])')
+    # ---- 防御塔射程 / 攻速。
+    # 用**独立的假 store**：主 store 里那座塔是为了无CD 测试造的（attacks 是个数组，
+    # 不是真形状），往里加实体还会改掉「tower 3/3」那条自检断言。
+    w('  local tstore = { entities = {')
+    w('    [1] = { id = 1, template_name = ' + Q + 'tower_archers_lvl2' + Q + ',')
+    w('            attacks = { range = 200, list = { { cooldown = 1 }, { cooldown = 2 } } } },')
+    w('    [2] = { id = 2, template_name = ' + Q + 'tower_holder_1' + Q +
+      ', attacks = { range = 50 } },')
+    w('  } }')
+    w('  local kept_store = _G.game.store')
+    w('  _G.game.store = tstore')
+    w('  S.tower.range, S.tower.rate = 1, 1')
+    w('  S.tower_seen = setmetatable({}, { __mode = ' + Q + 'k' + Q + ' })')
+    w('  S.tower_apply_fn()')
+    w('  say(' + Q + 'tw_at1_range' + Q + ', tstore.entities[1].attacks.range)')
+    w('  S.tower.range, S.tower.rate = 2, 2')
+    w('  S.tower_apply_fn()')
+    w('  say(' + Q + 'tw_range' + Q + ', tstore.entities[1].attacks.range)')
+    w('  say(' + Q + 'tw_cd1' + Q + ', tstore.entities[1].attacks.list[1].cooldown)')
+    w('  say(' + Q + 'tw_cd2' + Q + ', tstore.entities[1].attacks.list[2].cooldown)')
+    # 幂等：再跑一遍不能复合
+    w('  S.tower_apply_fn()')
+    w('  say(' + Q + 'tw_range_twice' + Q + ', tstore.entities[1].attacks.range)')
+    # 空建造位（holder）没有真的 attacks，一个数都不许碰
+    w('  say(' + Q + 'tw_holder' + Q + ', tstore.entities[2].attacks.range)')
+    # 调回 x1 要还原（冷却也要还原，它乘的是倒数）
+    w('  S.tower.range, S.tower.rate = 1, 1')
+    w('  S.tower_apply_fn()')
+    w('  say(' + Q + 'tw_range_back' + Q + ', tstore.entities[1].attacks.range)')
+    w('  say(' + Q + 'tw_cd_back' + Q + ', tstore.entities[1].attacks.list[1].cooldown)')
+    # 塔升级会**重建实体** → 新表没记录 → 按完整倍率乘一次（不是只乘差值）
+    w('  S.tower.range = 3')
+    w('  tstore.entities[3] = { id = 3, template_name = ' + Q + 'tower_archers_lvl3' + Q + ',')
+    w('                          attacks = { range = 220, list = { { cooldown = 0.7 } } } }')
+    w('  S.tower_apply_fn()')
+    w('  say(' + Q + 'tw_upgraded' + Q + ', tstore.entities[3].attacks.range)')
+    w('  S.tower.range = 1  S.tower_apply_fn()')
+    w('  _G.game.store = kept_store')
     # ---- 每个菜单项都必须有可用标签（标签为 nil 会让整个面板静默消失）
     # 标签 == id 是 menu_items() 里 L(id) 回退的特征（MENU_TEXT 漏了这条文案，cn/en 任一边），
     # 所以只能这么查：光查「非空字符串」永远为真，等于没测。
@@ -731,6 +769,25 @@ def main():
           "seen=" + kv.get("gold_kill_off", "?"))
     check(kv.get("gold_restored") == "1", "回到 x1 后倍率表已还原",
           "tbl=" + kv.get("gold_restored", "?"))
+    # ---- 防御塔射程 / 攻速：字段在**活塔实体的 attacks 上**（attacks.range /
+    # attacks.list[].cooldown）。改 balance.towers.*.stats.* 是没用的 —— 那个只喂 UI 数字。
+    check(kv.get("tw_at1_range") == "200", "倍率 x1 时塔射程一个数都不动",
+          "range=" + kv.get("tw_at1_range", "?"))
+    check(kv.get("tw_range") == "400", "射程 x2 落在 attacks.range 上",
+          "range=" + kv.get("tw_range", "?"))
+    check(kv.get("tw_cd1") == "0.5" and kv.get("tw_cd2") == "1",
+          "攻速 x2 落在 attacks.list[].cooldown 上，且乘的是**倒数**（1->0.5、2->1）",
+          "%s / %s" % (kv.get("tw_cd1", "?"), kv.get("tw_cd2", "?")))
+    check(kv.get("tw_range_twice") == "400", "重放不复合（记的是「已乘上去的倍率」）",
+          "range=" + kv.get("tw_range_twice", "?"))
+    check(kv.get("tw_holder") == "50", "空建造位（tower_holder_*）一个数都不碰",
+          "range=" + kv.get("tw_holder", "?"))
+    check(kv.get("tw_range_back") == "200" and kv.get("tw_cd_back") == "1",
+          "调回 x1 后射程与冷却都还原",
+          "%s / %s" % (kv.get("tw_range_back", "?"), kv.get("tw_cd_back", "?")))
+    check(kv.get("tw_upgraded") == "660",
+          "塔升级换实体后按**完整**倍率乘一次（220 x3 = 660，不是只乘差值）",
+          "range=" + kv.get("tw_upgraded", "?"))
     check(kv.get("labelless_items") == "", "每个菜单项都有标签", kv.get("labelless_items", "?"))
     # （命令文件通道已在 v5 从发行版移除，对应的断言一并删掉）
     check(kv.get("last_err") == "nil", "全程未记录任何错误", kv.get("last_err", "?"))
@@ -914,12 +971,20 @@ def main():
     # 精简版**应该**有的（金币/生命/无限金钱 + 敌人血量/移速 + 星星/升级树）
     for want in ("gold_add", "gold_sub", "lives_add", "lives_sub", "hold",
                  "hold_lives", "gold_mult", "next_wave", "enemy_hp", "enemy_speed",
+                 "tower_range",
                  "stars_max", "unlock_tree", "power_max",
                  "nocd_power", "nocd_hero", "nocd_tower",
                  "hero_now_up", "hero_now_max", "close"):
         check(want in ids, "菜单含 " + want)
     # **不该**有的：删掉的那些必须真的不在 —— 免得哪天又把未验证的东西混回来
-    for gone in ("tower_dmg", "tower_range", "tower_rate", "free_towers",
+    # ⚠️ tower_range 2026-09-27 起**故意从这条清单里移出**：它当年被撤是因为缩错了字段
+    # （缩的是 balance.towers.*.stats.*，那个只喂 UI 数字），现在改成缩活塔实体的
+    # attacks.range —— 源码确认那是选敌时现读的真字段（见 HANDOFF §0.5）。
+    # tower_rate 仍在清单里但**理由变了**：不是没做，而是底层做通了、实测却发现攻速受
+    # 射击动画时长限制（周期 = max(cooldown, 动画时长)），调快很快失效，所以不摆上菜单。
+    # 它的底层机器仍由下面 tw_cd* 那几条断言钉着（直接驱动 S.tower.rate，不走菜单）。
+    # tower_dmg 仍然禁止：伤害在**子弹模板**上，不在塔上，要另找枪口，没做。
+    for gone in ("tower_dmg", "tower_rate", "free_towers",
                  "all_towers", "kill_all", "hide_ui", "gems_add", "unlock_all",
                  "probe", "store", "api", "report", "snap", "diff", "shot",
                  "level_gems_add",
