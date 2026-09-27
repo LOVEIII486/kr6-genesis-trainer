@@ -65,6 +65,11 @@ end
 if type(S.nocd) ~= "table" then
   S.nocd = { power = false, hero = false, tower = false }
 end
+-- 被清掉的原值。**必须记**：清的是"冷却时长"这类字段，游戏不会自己把时长重写回去，
+-- 不记的话关掉开关也恢复不了（玩家实测：英雄无 CD 关了还在连放）。弱键，对象回收即释放。
+if type(S.nocd_base) ~= "table" then
+  S.nocd_base = setmetatable({}, { __mode = "k" })
+end
 -- 存档钩子的登记表与待应用的存档操作队列
 if type(S.slot_hooks) ~= "table" then S.slot_hooks = {} end
 if type(S.slot_ops) ~= "table" then S.slot_ops = {} end
@@ -252,6 +257,10 @@ local function action(id, arg)
     S.nocd[key] = v
     if v then
       S.nocd_report, S.nocd_since = true, os.time()
+    else
+      -- 关掉就**把原值写回去**：清的是"冷却时长"，游戏不会自己重写，不还原就会出现
+      -- "关了还在连放"（玩家实测）。还开着的那些下一帧会重新清。
+      nocd_restore()
     end
     local cn = ({ power = "法术", hero = "英雄技能", tower = "塔技能" })[key] or key
     local r = cn .. "无CD: " .. (v and "开" or "关")
@@ -480,13 +489,36 @@ local CD_CONTAINERS = { "attacks", "timed_attacks", "skills", "main_script" }
 
 -- 走进容器把计时字段清零。seen = **看到几个候选字段（不管值是多少）** —— v7 那个自检只数
 -- "值 > 0" 的，技能正好不在冷却时报 0，分不出"没有这种字段"和"字段恰好在 0"，害我白跑一趟。
+-- 记下原值再一次写掉；同一个字段只记第一次（那次才是游戏自己的值）。
+local function cd_set(obj, k, v)
+  local box = S.nocd_base[obj]
+  if not box then box = {} S.nocd_base[obj] = box end
+  if box[k] == nil then box[k] = rawget(obj, k) end
+  obj[k] = v
+end
+
+-- 关掉任一个开关时把记下的原值全部写回（还开着的那些下一帧会重新清）
+local function nocd_restore()
+  local n = 0
+  for obj, box in pairs(S.nocd_base) do
+    if type(obj) == "table" then
+      for k, v in pairs(box) do
+        obj[k] = v
+        n = n + 1
+      end
+    end
+  end
+  S.nocd_base = setmetatable({}, { __mode = "k" })
+  return n
+end
+
 local function clear_container(node, acc, depth)
   if type(node) ~= "table" or depth > 2 then return end
   for k, v in pairs(node) do
     if type(v) == "number" then
       if type(k) == "string" and CD_FIELDS[k] then
         acc.seen = acc.seen + 1
-        if v ~= 0 then node[k] = 0 acc.cleared = acc.cleared + 1 end
+        if v ~= 0 then cd_set(node, k, 0) acc.cleared = acc.cleared + 1 end
       end
     elseif type(v) == "table" then
       clear_container(v, acc, depth + 1)
@@ -538,7 +570,7 @@ local function clear_button_list(kids, acc)
       for _, k in ipairs(POWER_CD_FIELDS) do
         local v = rawget(b, k)
         if type(v) == "number" and v > 0 then
-          b[k] = 0
+          cd_set(b, k, 0)
           acc.cleared = acc.cleared + 1
         end
       end
@@ -982,6 +1014,8 @@ end
 -- 暴露给测试台：测试环境里没有 storage 模块、钩子装不上，而存档改写必须能单独测。
 S.mult_live = mult_apply_live        -- 暴露给测试台：倍率那条在测试里要能单独调
 S.nocd_clear_buttons = clear_button_list   -- 测试台没有 game_gui，直接喂几个假按钮
+S.nocd_clear_entity = clear_entity_cds     -- 同上：英雄/塔那条
+S.nocd_restore = nocd_restore              -- 关掉开关时要能还原（可逆性测试）
 S.slot_apply = apply_slot_ops
 S.slot_like = is_slot_like
 

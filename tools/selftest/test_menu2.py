@@ -264,6 +264,20 @@ def build_harness(release=False):
     w('  say(' + Q + 'nocd_btn_time' + Q + ', kids[1].cooldown_time)')
     w('  say(' + Q + 'nocd_btn_max' + Q + ', kids[1].cooldown_max)')
     w('  say(' + Q + 'nocd_btn_other_kept' + Q + ', kids[1].other)')
+    # 可逆性（玩家实测过"关了还在连放"）：清掉的是**冷却时长**，游戏不会自己重写，
+    # 所以关掉开关时必须把原值写回去。
+    w('  local ent2 = { timed_attacks = { { cd = 8, ts = 0 } } }')
+    w('  local acc4 = { seen = 0, cleared = 0 }')
+    w('  S.nocd_clear_entity(ent2, acc4)')
+    w('  say(' + Q + 'nocd_rev_zeroed' + Q + ', ent2.timed_attacks[1].cd)')
+    w('  S.nocd_restore()')
+    w('  say(' + Q + 'nocd_rev_restored' + Q + ', ent2.timed_attacks[1].cd)')
+    w('  local kids2 = { { cooldown_time = 20 } }')
+    w('  local acc5 = { seen = 0, cleared = 0 }')
+    w('  S.nocd_clear_buttons(kids2, acc5)')
+    w('  say(' + Q + 'nocd_rev_btn_zeroed' + Q + ', kids2[1].cooldown_time)')
+    w('  S.nocd_restore()')
+    w('  say(' + Q + 'nocd_rev_btn_restored' + Q + ', kids2[1].cooldown_time)')
     w('  say(' + Q + 'nocd_report_msg' + Q + ', S.msg)')
     # 关掉就停手（游戏自己的冷却接着走）
     w('  S.nocd.power, S.nocd.hero, S.nocd.tower = false, false, false')
@@ -649,6 +663,12 @@ def main():
           "%s / %s" % (kv.get("nocd_btn_time"), kv.get("nocd_btn_max")))
     check(kv.get("nocd_btn_other_kept") == "7", "法术：按钮上别的字段不动",
           kv.get("nocd_btn_other_kept", "?"))
+    check(kv.get("nocd_rev_zeroed") == "0" and kv.get("nocd_rev_restored") == "8",
+          "可逆性：英雄技能的 cd 被清零后，关掉开关能写回原值（8）",
+          "%s -> %s" % (kv.get("nocd_rev_zeroed"), kv.get("nocd_rev_restored")))
+    check(kv.get("nocd_rev_btn_zeroed") == "0" and kv.get("nocd_rev_btn_restored") == "20",
+          "可逆性：法术按钮的 cooldown_time 清掉后能写回原值（20）",
+          "%s -> %s" % (kv.get("nocd_rev_btn_zeroed"), kv.get("nocd_rev_btn_restored")))
     _msg = kv.get("nocd_report_msg") or ""
     check(all(s in _msg for s in ("hero 3/3", "tower 3/3")),
           "自检回执按类报 seen/cleared（hero 3/3 / tower 3/3；power 在测试台无模板模块，恒 0）", _msg)
