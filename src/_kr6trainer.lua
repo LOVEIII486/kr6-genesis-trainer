@@ -70,8 +70,9 @@ end
 if type(S.nocd_base) ~= "table" then
   S.nocd_base = setmetatable({}, { __mode = "k" })
 end
--- 击杀金币翻倍的开关与基线（基线按倍率表的键记，见 gold_push）
-if S.gold2x == nil then S.gold2x = false end
+-- 击杀金币倍率（**最低 1，即完全不动**）与基线（基线按倍率表的键记，见 gold_push）
+if type(S.gold) ~= "table" then S.gold = { mult = 1 } end
+if type(S.gold.mult) ~= "number" then S.gold.mult = 1 end
 if type(S.gold_base) ~= "table" then S.gold_base = {} end
 -- 存档钩子的登记表与待应用的存档操作队列
 if type(S.slot_hooks) ~= "table" then S.slot_hooks = {} end
@@ -211,15 +212,12 @@ local function action(id, arg)
     note("生命锁定: " .. (S.hold_lives and "开" or "关"),
          "lock lives: " .. (S.hold_lives and "ON" or "OFF"))
     return "hold_lives=" .. tostring(S.hold_lives)
-  elseif id == "gold_x2" then
-    S.gold2x = not S.gold2x
-    if S.gold2x then
-      install_gold_hook()          -- 点开时补装一次：进关卡前 systems 可能还没 require
-    else
-      gold_pop(gold_factor_tbl())  -- 关掉立刻还原，不等下一趟钩子
-    end
-    local r = "击杀金币翻倍: " .. (S.gold2x and "开" or "关")
-    note(r, "kill gold x2: " .. (S.gold2x and "on" or "off"))
+  elseif id == "gold_mult" then
+    -- 可调行没有"执行"语义，但每个菜单项必须能用空参调用一次（冒烟测试会跑遍全菜单），
+    -- 所以给一个**只读**查询；调整走 ←→（tweak 的第二种目标，见 menu_items 里的 adjust）。
+    local v = S.gold.mult
+    local r = "击杀金币 x" .. tostring(v) .. "（←→ 调整，最低 x1）"
+    note(r, "kill gold x" .. tostring(v) .. " (left/right, min x1)")
     return r
   elseif id == "lives_sub" then
     local r = add_field("lives", -(tonumber(arg) or 10))
@@ -335,16 +333,17 @@ na = function(what)
   return "n/a: " .. tostring(what)
 end
 
--- 击杀金币翻倍。**只加倍击杀，不加倍漏怪。**
+-- 击杀金币倍率。**只放大击杀，不放大漏怪**；倍率 1 时完全不动游戏。
 --
 -- 击杀与漏怪共用同一个倍率表达式，但各自在函数开头读一次，落在两个不同的系统里：
 --   all/systems.lua:1985  sys.health:on_update      ← 击杀
 --   all/systems.lua:2404  sys.goal_line:on_update   ← 漏怪也给钱，且不发 got-enemy-gold
--- 所以把「表 ×2」限制在 sys.health:on_update 这一趟里就够了，漏怪那趟读到的还是原值。
+-- 所以把「表 × 倍率」限制在 sys.health:on_update 这一趟里就够了，漏怪那趟读到的还是原值。
 -- 调度器每条 tick 现查 `sys:on_update`（lib/klove/simulation.lua:127），包住表上的函数即生效。
 --
 -- 为什么不改 enemy.gold / balance：那是数值来源，扣钱与退款路径不读倍率表，改表零误伤。
 -- 为什么不用 hand_of_midas_factor：那个每击杀一次就播一遍金币飞行动画和音效。
+-- ⚠️ 所有模式的值都 ≥0（HEROIC/ENDLESS 那两格是 0），所以倍率不会把它乘成负数。
 local GOLD_FACTOR_TBL = "gold_enemy_factor_per_mode"
 
 gold_factor_tbl = function()
@@ -353,14 +352,15 @@ gold_factor_tbl = function()
   return (type(t) == "table") and t or nil
 end
 
--- 表 → 基线 ×2。基线只在第一次见面时记（游戏自己从不写这张表，写点为零）。
+-- 表 → 基线 × 倍率。基线只在第一次见面时记（游戏自己从不写这张表，写点为零）。
 local function gold_push()
   local t = gold_factor_tbl()
   if not t then return nil end
+  local m = S.gold.mult
   for k, v in pairs(t) do
     if type(v) == "number" then
       if S.gold_base[k] == nil then S.gold_base[k] = v end
-      local want = S.gold_base[k] * 2
+      local want = S.gold_base[k] * m
       if v ~= want then t[k] = want end
     end
   end
@@ -383,7 +383,8 @@ install_gold_hook = function()
   if type(orig) ~= "function" then return false end
   S.gold_hook_done = true
   rawset(h, "on_update", function(...)
-    if not S.gold2x then return orig(...) end
+    -- 倍率 1 = 完全不动游戏（也就不必还原），这条短路是热路径上的主要开销
+    if S.gold.mult == 1 then return orig(...) end
     local t = gold_push()
     -- 出错也要还原：否则表永远停在 ×2 上，漏怪金币也跟着翻倍。
     local ok, a, b, c, d = pcall(orig, ...)
@@ -1113,7 +1114,7 @@ local MENU_TEXT = {
     gold_add = "金币 +1000", gold_sub = "金币 -1000",
     lives_add = "生命 +10", lives_sub = "生命 -10",
     hold = "无限金钱", hold_lives = "生命锁定",
-    gold_x2 = "击杀金币翻倍",
+    gold_mult = "击杀金币倍率",
     next_wave = "立刻下一波",
     hdr_res = "资源", hdr_wave = "波次", hdr_units = "敌人属性",
     hdr_hero = "英雄",
@@ -1135,7 +1136,7 @@ local MENU_TEXT = {
     gold_add = "gold +1000", gold_sub = "gold -1000",
     lives_add = "lives +10", lives_sub = "lives -10",
     hold = "infinite gold", hold_lives = "lock lives",
-    gold_x2 = "kill gold x2",
+    gold_mult = "kill gold mult",
     next_wave = "next wave now",
     hdr_res = "RESOURCES", hdr_wave = "WAVES", hdr_units = "ENEMY STATS",
     hdr_hero = "HEROES",
@@ -1194,8 +1195,11 @@ local function menu_items()
     { id = "lives_sub", label = L("lives_sub"), adjust = { field = "lives", step = 10, sign = -1 } },
     { id = "hold",      label = L("hold"), toggle = function() return S.hold end },
     { id = "hold_lives", label = L("hold_lives"), toggle = function() return S.hold_lives end },
-    -- 击杀金币翻倍。**只加倍击杀**：漏怪也给金币，但那条走另一个系统，不受这里影响。
-    { id = "gold_x2",   label = L("gold_x2"), toggle = function() return S.gold2x end },
+    -- 击杀金币倍率。**只放大击杀**：漏怪也给金币，但那走另一个系统，不受这里影响。
+    -- 下限 x1（= 完全不动），所以它和「敌人血量」一样是 x1 起步的可调行，不是开关。
+    { id = "gold_mult", label = L("gold_mult"),
+      adjust = { set = S.gold, key = "mult", step = 0.5, sign = 1, min = 1, max = 10 },
+      value = function() return fmt_mult(S.gold.mult) end },
 
     { id = "hdr_wave",  label = L("hdr_wave"), header = true },
     { id = "next_wave", label = L("next_wave") },

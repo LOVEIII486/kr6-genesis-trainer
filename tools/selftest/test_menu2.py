@@ -222,9 +222,13 @@ def build_harness(release=False):
     w('  store.player_gold = 5  pcall(fake.update)')
     w('  say(' + Q + 'gold_after_hold' + Q + ', store.player_gold)')
     w('  pick(' + Q + 'hold' + Q + ') key(' + Q + 'return' + Q + ')      -- 关掉')
-    # ---- 击杀金币 ×2（走真菜单项 + 真钩子；只该影响击杀，不该影响漏怪）
-    w('  pick(' + Q + 'gold_x2' + Q + ') key(' + Q + 'return' + Q + ')')
-    w('  say(' + Q + 'gold_x2_on' + Q + ', S.gold2x)')
+    # ---- 击杀金币倍率（可调行，下限 x1；只该影响击杀，不该影响漏怪）
+    # x1 时钩子短路：表一个数都不该被动
+    w('  fake_systems.health:on_update(0, 0, store)')
+    w('  say(' + Q + 'gold_at1' + Q + ', seen_health)')
+    # → 两下 = x2（步长 0.5）
+    w('  pick(' + Q + 'gold_mult' + Q + ') key(' + Q + 'right' + Q + ') key(' + Q + 'right' + Q + ')')
+    w('  say(' + Q + 'gold_mult_val' + Q + ', S.gold.mult)')
     w('  fake_systems.health:on_update(0, 0, store)')
     w('  say(' + Q + 'gold_kill_seen' + Q + ', seen_health)')
     w('  say(' + Q + 'gold_idx6' + Q + ', seen_idx6)')
@@ -232,8 +236,14 @@ def build_harness(release=False):
     w('  fake_systems.goal_line:on_update(0, 0, store)')
     w('  say(' + Q + 'gold_goal_seen' + Q + ', seen_goal)')
     w('  say(' + Q + 'gold_outside' + Q + ', GS.gold_enemy_factor_per_mode[1])')
-    w('  pick(' + Q + 'gold_x2' + Q + ') key(' + Q + 'return' + Q + ')      -- 关掉')
-    w('  say(' + Q + 'gold_x2_off' + Q + ', S.gold2x)')
+    # 下限与上限都要夹住
+    w('  pick(' + Q + 'gold_mult' + Q + ')')
+    w('  for _ = 1, 12 do key(' + Q + 'left' + Q + ') end')
+    w('  say(' + Q + 'gold_floor' + Q + ', S.gold.mult)')
+    w('  for _ = 1, 40 do key(' + Q + 'right' + Q + ') end')
+    w('  say(' + Q + 'gold_ceil' + Q + ', S.gold.mult)')
+    w('  for _ = 1, 40 do key(' + Q + 'left' + Q + ') end')
+    w('  say(' + Q + 'gold_back' + Q + ', S.gold.mult)')
     w('  fake_systems.health:on_update(0, 0, store)')
     w('  say(' + Q + 'gold_kill_off' + Q + ', seen_health)')
     w('  say(' + Q + 'gold_restored' + Q + ', GS.gold_enemy_factor_per_mode[1])')
@@ -695,25 +705,31 @@ def main():
     check(kv.get("hold_on") == "true", "无限金钱可开关")
     check(kv.get("gold_after_hold") == "999999", "无限金钱花掉后自动补满",
           "gold=" + kv.get("gold_after_hold", "?"))
-    # ---- 击杀金币 ×2：**只**加倍击杀。击杀与漏怪共用同一个倍率表达式，靠「只在
-    # sys.health:on_update 这一趟把表 ×2」区分开，所以这三条要一起看。
-    check(kv.get("gold_x2_on") == "true", "击杀金币翻倍可开关",
-          kv.get("gold_x2_on", "?"))
-    check(kv.get("gold_kill_seen") == "2", "击杀系统读到的是 ×2",
+    # ---- 击杀金币倍率：**只**放大击杀。击杀与漏怪共用同一个倍率表达式，靠「只在
+    # sys.health:on_update 这一趟把表 × 倍率」区分开，所以这几条要一起看。
+    check(kv.get("gold_at1") == "1", "倍率 x1 时钩子短路，倍率表一个数都不动",
+          "seen=" + kv.get("gold_at1", "?"))
+    check(kv.get("gold_mult_val") == "2", "→ 按两下到 x2（步长 0.5，是**可调**不是开关）",
+          "mult=" + kv.get("gold_mult_val", "?"))
+    check(kv.get("gold_kill_seen") == "2", "击杀系统读到的是放大后的值",
           "seen=" + kv.get("gold_kill_seen", "?"))
-    check(kv.get("gold_idx6") == "3", "整张倍率表按基线 ×2（1.5 -> 3），不是只改当前模式",
+    check(kv.get("gold_idx6") == "3", "整张倍率表都按基线放大（1.5 -> 3），不是只改当前模式",
           "idx6=" + kv.get("gold_idx6", "?"))
     check(kv.get("gold_idx2") == "0",
           "基线是 0 的格子不会被弄成非 0（HEROIC/ENDLESS 击杀本来就不给钱）",
           "idx2=" + kv.get("gold_idx2", "?"))
     check(kv.get("gold_goal_seen") == "1", "漏怪系统读到的仍是原值（没被带上）",
           "seen=" + kv.get("gold_goal_seen", "?"))
-    check(kv.get("gold_outside") == "1", "钩子跑完表就还原，不会留在 ×2 上",
+    check(kv.get("gold_outside") == "1", "钩子跑完表就还原，不会留在放大后的值上",
           "tbl=" + kv.get("gold_outside", "?"))
-    check(kv.get("gold_x2_off") == "false", "再按一次关掉", kv.get("gold_x2_off", "?"))
-    check(kv.get("gold_kill_off") == "1", "关掉后击杀回到原值",
+    check(kv.get("gold_floor") == "1", "← 按到底夹在下限 x1，不会更低",
+          "mult=" + kv.get("gold_floor", "?"))
+    check(kv.get("gold_ceil") == "10", "→ 按到底夹在上限 x10",
+          "mult=" + kv.get("gold_ceil", "?"))
+    check(kv.get("gold_back") == "1", "再按回 x1", "mult=" + kv.get("gold_back", "?"))
+    check(kv.get("gold_kill_off") == "1", "回到 x1 后击杀读回原值",
           "seen=" + kv.get("gold_kill_off", "?"))
-    check(kv.get("gold_restored") == "1", "关掉后倍率表已还原",
+    check(kv.get("gold_restored") == "1", "回到 x1 后倍率表已还原",
           "tbl=" + kv.get("gold_restored", "?"))
     check(kv.get("labelless_items") == "", "每个菜单项都有标签", kv.get("labelless_items", "?"))
     # （命令文件通道已在 v5 从发行版移除，对应的断言一并删掉）
@@ -897,7 +913,7 @@ def main():
     ids = kv.get("all_item_ids", "").split(",")
     # 精简版**应该**有的（金币/生命/无限金钱 + 敌人血量/移速 + 星星/升级树）
     for want in ("gold_add", "gold_sub", "lives_add", "lives_sub", "hold",
-                 "hold_lives", "gold_x2", "next_wave", "enemy_hp", "enemy_speed",
+                 "hold_lives", "gold_mult", "next_wave", "enemy_hp", "enemy_speed",
                  "stars_max", "unlock_tree", "power_max",
                  "nocd_power", "nocd_hero", "nocd_tower",
                  "hero_now_up", "hero_now_max", "close"):
