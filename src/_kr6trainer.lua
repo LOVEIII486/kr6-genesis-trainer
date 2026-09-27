@@ -61,6 +61,10 @@ if type(S.mult_base) ~= "table" then
   -- 弱键：实体表被游戏回收后基线跟着释放，不会越攒越多。理由见 scale_table。
   S.mult_base = setmetatable({}, { __mode = "k" })
 end
+-- 技能无 CD 的三个开关（分开的，各自定位目标，见 apply_nocd）
+if type(S.nocd) ~= "table" then
+  S.nocd = { power = false, hero = false, tower = false }
+end
 -- 存档钩子的登记表与待应用的存档操作队列
 if type(S.slot_hooks) ~= "table" then S.slot_hooks = {} end
 if type(S.slot_ops) ~= "table" then S.slot_ops = {} end
@@ -241,6 +245,18 @@ local function action(id, arg)
     return queue_slot_op({ op = "tree" }, "塔树升满", "max tower trees")
   elseif id == "power_max" then
     return queue_slot_op({ op = "power_max" }, "法术升满", "max powers")
+  elseif id == "nocd_power" or id == "nocd_hero" or id == "nocd_tower" then
+    -- 即时生效：打开后 tick 每帧清零，1 秒后播报清了几个（自检）。
+    local key = id:sub(6)                       -- power / hero / tower
+    local v = not S.nocd[key]
+    S.nocd[key] = v
+    if v then
+      S.nocd_report, S.nocd_since = true, os.time()
+    end
+    local cn = ({ power = "法术", hero = "英雄技能", tower = "塔技能" })[key] or key
+    local r = cn .. "无CD: " .. (v and "开" or "关")
+    note(r, key .. " no cooldown: " .. (v and "on" or "off"))
+    return r
   elseif id == "hero_now_up" or id == "hero_now_max" then
     -- 关卡内即时升级。失败时用 na()（**不含 "FAIL"**，冒烟测试把含 FAIL 的回复算失败）。
     local msg, why = hero_raise(id == "hero_now_max" and "max" or "next")
@@ -446,6 +462,131 @@ local function each_entity(s, fn)
     if type(e) == "table" then n = n + fn(e) end
   end
   return n
+end
+
+-- 技能无CD。**冷却不在 store 的直接字段上**（v7 猜错了，实机三类全 0；探针读到真实结构后重写）：
+--   法术：控制对象是 store.entities 里 template_name = "power_<id>_control" 的实体，cooldown 是它的直接字段
+--   英雄：技能在英雄实体（store.hero_team）的 timed_attacks 容器里（以及 hero.skills）
+--   塔　：tower_<名>_lvl<N> 实体上的 attacks / timed_attacks 容器
+-- 所以三类都是"找到实体 → 走进技能容器 → 把里面的计时字段清零"。
+-- ⚠️ 禁区：塔/英雄的基础攻击节奏由 attacks 里的 attack_cd 等决定，但那些**不在**容器里 ——
+-- 我们只动容器内部，天然不碰它。
+local CD_FIELDS = {
+  cd = true, ["_cd"] = true, cooldown = true, ts = true, ["_ts"] = true,
+  next = true, next_ts = true, timer = true, time_left = true,
+  cooldown_left = true, delay = true, remaining = true, remained = true,
+}
+local CD_CONTAINERS = { "attacks", "timed_attacks", "skills", "main_script" }
+
+-- 走进容器把计时字段清零。seen = **看到几个候选字段（不管值是多少）** —— v7 那个自检只数
+-- "值 > 0" 的，技能正好不在冷却时报 0，分不出"没有这种字段"和"字段恰好在 0"，害我白跑一趟。
+local function clear_container(node, acc, depth)
+  if type(node) ~= "table" or depth > 2 then return end
+  for k, v in pairs(node) do
+    if type(v) == "number" then
+      if type(k) == "string" and CD_FIELDS[k] then
+        acc.seen = acc.seen + 1
+        if v ~= 0 then node[k] = 0 acc.cleared = acc.cleared + 1 end
+      end
+    elseif type(v) == "table" then
+      clear_container(v, acc, depth + 1)
+    end
+  end
+end
+
+-- 实体的技能容器（英雄还有一层 hero.*）
+-- 实体的技能容器。**英雄的库存在 .hero，防御塔的库存在 .tower**（探针实测：建成的塔实体
+-- 是 tower_forger_lvl4，容器挂在它的 tower 子表上；实体自己那层没有容器）。
+local function clear_entity_cds(e, acc)
+  local nodes = { e }
+  for i = 1, 2 do
+    local sub = rawget(e, i == 1 and "hero" or "tower")
+    if type(sub) == "table" then nodes[#nodes + 1] = sub end
+  end
+  for i = 1, #nodes do
+    for j = 1, #CD_CONTAINERS do
+      local c = rawget(nodes[i], CD_CONTAINERS[j])
+      if type(c) == "table" then clear_container(c, acc, 0) end
+    end
+  end
+end
+
+local function tpl_name(e)
+  local nm = rawget(e, "template_name")
+  return (type(nm) == "string") and nm or ""
+end
+
+-- 法术：控制对象**不是关卡里的实体**（探针实测：实体列表里没有 power_*，它只在施放那一刻
+-- 才 create_entity 出来）。真正的判据在**控制模板**上的三个函数 —— can_fire_fn（能不能放）/
+-- get_cooldown / power_cooldown_fn（名字来自 templates_game.lua 里 power_<id>_control 一带）。
+-- 做法：把名字里带 "power" 的模板里这三个函数换成"永远就绪"；原件存起来，关掉开关还原。
+
+
+
+-- 法术：冷却**时长**在每个法术按钮自己身上 ——
+--   game_gui._ingame_fit_width_y0.powers_view.view.children[i].cooldown_time
+-- 施放那一刻它从 2 跳到 20（秒）。按钮上的 tm.phase 是它**算出来的进度**、每帧重算，所以写
+-- phase 没用（表现成进度条闪一下），要清的是时长本身。tm 里那份按英雄/塔同一套规则一起清。
+local POWER_CD_FIELDS = { "cooldown_time", "cooldown", "cooldown_max", "cooldown_min" }
+
+local function clear_button_list(kids, acc)
+  if type(kids) ~= "table" then return end
+  for i = 1, 6 do
+    local b = kids[i]
+    if type(b) == "table" then
+      acc.seen = acc.seen + 1
+      for _, k in ipairs(POWER_CD_FIELDS) do
+        local v = rawget(b, k)
+        if type(v) == "number" and v > 0 then
+          b[k] = 0
+          acc.cleared = acc.cleared + 1
+        end
+      end
+      local tm = rawget(b, "tm")
+      if type(tm) == "table" then clear_container(tm, acc, 0) end
+    end
+  end
+end
+
+-- 从 game_gui 里找到法术按钮那一排
+local function clear_power_buttons(acc)
+  local gg = game_mod("game_gui")
+  if type(gg) ~= "table" then return end
+  local row = rawget(gg, "_ingame_fit_width_y0")
+  local pv = type(row) == "table" and rawget(row, "powers_view") or nil
+  local view = type(pv) == "table" and rawget(pv, "view") or nil
+  clear_button_list(type(view) == "table" and rawget(view, "children") or nil, acc)
+end
+
+
+-- 返回 {power={seen,cleared}, hero=..., tower=...}，按类播报（自检）。
+local function apply_nocd()
+  local by = { power = { seen = 0, cleared = 0 }, hero = { seen = 0, cleared = 0 },
+               tower = { seen = 0, cleared = 0 } }
+  local s = store_of()
+  if not s then return by end
+  if S.nocd.hero then
+    local team = rawget(s, "hero_team")
+    if type(team) == "table" then
+      for _, e in pairs(team) do
+        if type(e) == "table" then clear_entity_cds(e, by.hero) end
+      end
+    end
+  end
+  if S.nocd.tower then
+    each_entity(s, function(e)
+      local nm = tpl_name(e)
+      -- tower_holder_* 是**空建造位**（探针实测：没有技能数据），跳过省事
+      if nm:sub(1, 6) == "tower_" and not nm:find("holder", 1, true) then
+        clear_entity_cds(e, by.tower)
+      end
+      return 0
+    end)
+  end
+if S.nocd.power then
+    clear_power_buttons(by.power)   -- 实测有效：清按钮上的冷却时长
+  end
+  return by
 end
 
 -- 血量必须**成对**缩放：只缩 hp_max 等于没缩（当前血量还是原数字，照样挨那么多伤害
@@ -839,6 +980,8 @@ local function apply_slot_ops(t)
 end
 
 -- 暴露给测试台：测试环境里没有 storage 模块、钩子装不上，而存档改写必须能单独测。
+S.mult_live = mult_apply_live        -- 暴露给测试台：倍率那条在测试里要能单独调
+S.nocd_clear_buttons = clear_button_list   -- 测试台没有 game_gui，直接喂几个假按钮
 S.slot_apply = apply_slot_ops
 S.slot_like = is_slot_like
 
@@ -922,6 +1065,8 @@ local MENU_TEXT = {
     hdr_save = "存档（回主菜单再进档生效）",
     enemy_hp = "敌人血量", enemy_speed = "敌人移速",
     stars_max = "星星拉满", unlock_tree = "塔树升满", power_max = "法术升满",
+    hdr_cd = "技能冷却",
+    nocd_power = "法术无CD", nocd_hero = "英雄技能无CD", nocd_tower = "塔技能无CD",
     hero_now_up = "英雄升一级（本关立即）", hero_now_max = "英雄拉满（本关立即）",
     close = "关闭菜单",
     on = "开", off = "关",
@@ -939,6 +1084,9 @@ local MENU_TEXT = {
     hdr_save = "SAVE (apply on reload)",
     enemy_hp = "enemy HP", enemy_speed = "enemy speed",
     stars_max = "max stars", unlock_tree = "max tower trees", power_max = "max powers",
+    hdr_cd = "COOLDOWNS",
+    nocd_power = "no power cooldown", nocd_hero = "no hero skill cd",
+    nocd_tower = "no tower skill cd",
     hero_now_up = "hero +1 level (now)", hero_now_max = "hero max (now)",
     close = "close menu",
     on = "ON", off = "OFF",
@@ -1003,6 +1151,12 @@ local function menu_items()
     { id = "hdr_hero",  label = L("hdr_hero"), header = true },
     { id = "hero_now_up",  label = L("hero_now_up") },
     { id = "hero_now_max", label = L("hero_now_max") },
+
+    -- 技能冷却。三项**分开**（三类技能的冷却记在不同地方），各自开关、即时生效。
+    { id = "hdr_cd", label = L("hdr_cd"), header = true },
+    { id = "nocd_power", label = L("nocd_power"), toggle = function() return S.nocd.power end },
+    { id = "nocd_hero",  label = L("nocd_hero"),  toggle = function() return S.nocd.hero end },
+    { id = "nocd_tower", label = L("nocd_tower"), toggle = function() return S.nocd.tower end },
 
     -- 存档级。**排队**式：按下去不会立刻变，要回主菜单再进一次档（分组标题里已注明）。
     { id = "hdr_save", label = L("hdr_save"), header = true },
@@ -1079,7 +1233,13 @@ local function draw_menu()
   if not S.menu_open then return end
   if type(love) ~= "table" or type(love.graphics) ~= "table" then return end
   local T = MENU_TEXT[S.cjk and "cn" or "en"]
-  local items = menu_items()
+  -- ⚠️ 这一句在下面那个 pcall **外面**：它一抛错，菜单就整个不画（表现成"按了没反应"），
+  -- 而且外面几层都没有 pcall。所以这里自己接住并留痕。
+  local ok_items, items = pcall(menu_items)
+  if not ok_items then
+    record_err("menu_items", items)
+    return
+  end
 
   pcall(function()
     -- 先记下游戏的图形状态，画完原样还回去
@@ -1286,6 +1446,12 @@ local function tick(source)
   end
   S.drew = false
 
+  -- 技能无CD：开着才跑。放在 tick 最前面 —— 下面 1Hz 那段要拿这一趟的结果做自检回执。
+  if S.nocd.power or S.nocd.hero or S.nocd.tower then
+    local ok, h = pcall(apply_nocd)
+    S.nocd_hits = (ok and type(h) == "table") and h or nil
+  end
+
   -- 倍率只在本关生效：关卡一换就归 1（归 1 后下面那一趟 mult_apply 会把模板写回原值）。
   -- 每秒看一次足够 —— 换关不是逐帧事件。
   local now = os.time()
@@ -1298,6 +1464,26 @@ local function tick(source)
         S.mult.enemy_hp, S.mult.enemy_speed = 1, 1
       end
       S.mult_tag = tag
+    end
+    -- 技能无CD 的自检回执：**按类**报清了几个（power/hero/tower 都是 0 就是全没找对地方）。
+    if S.nocd_report then
+      local h, parts, total = S.nocd_hits or {}, {}, 0
+      local kinds = { { "power", S.nocd.power }, { "hero", S.nocd.hero }, { "tower", S.nocd.tower } }
+      for i = 1, #kinds do
+        if kinds[i][2] then
+          local v = h[kinds[i][1]] or {}
+          total = total + (v.seen or 0)
+          parts[#parts + 1] = kinds[i][1] .. " " .. (v.seen or 0) .. "/" .. (v.cleared or 0)
+        end
+      end
+      local txt = table.concat(parts, " / ")
+      if total > 0 then
+        S.nocd_report = false
+        note("技能无CD " .. txt, "no cooldown " .. txt)
+      elseif now - (S.nocd_since or now) >= 2 then
+        S.nocd_report = false
+        note("技能无CD 没找到技能容器：" .. txt, "no cooldown containers: " .. txt)
+      end
     end
   end
 
@@ -1374,7 +1560,10 @@ local function wrap_fn(owner, key, source)
   S.wrap_src[key] = true
   rawset(owner, key, function(...)
     local a, b, c, d = orig(...)
-    pcall(tick, source)
+    -- ⚠️ tick 里出错必须留痕：裸 pcall 会把它吞掉，表现成"改了没反应"，查起来极费劲
+    -- （调试 v8 时就吃了这个亏：倍率那块整段没跑，界面上什么都看不到）。
+    local ok, e = pcall(tick, source)
+    if not ok then record_err("tick@" .. tostring(source), e) end
     return a, b, c, d
   end)
   S.hooks[#S.hooks + 1] = source

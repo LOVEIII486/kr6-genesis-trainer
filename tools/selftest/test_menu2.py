@@ -78,11 +78,30 @@ def build_harness(release=False):
     w('                  entities = {')
     # health 必须同时给 hp 和 hp_max：只缩上限没用（当前血量不变，敌人照样按原血量死掉）。
     w('                    [2] = { id = 2, health = { hp_max = 200, hp = 200 },')
-    w('                            motion = { max_speed = 40 } },')
+    w('                            motion = { max_speed = 40 },')
+    # 敌人也有 attacks/timed_attacks：技能无CD 那三个开关**不许**碰它的冷却（清了就是加强敌人）
+    w('                            attacks = { { cooldown = 6 } },')
+    w('                            timed_attacks = { { cd = 6 } } },')
+    # [9] 防御塔：实体名是 tower_<名>_lvl<N>（探针实测），冷却在 attacks 容器里；
+    # 实体自己身上的 attack_cd 是**基础攻击节奏**，不许动。
+    # [9] 建成的塔：**库存在 .tower 子表里**（探针实测），实体自己那层也可能有一份
+    w('                    [9] = { id = 9, template_name = "tower_forger_lvl4", attack_cd = 9,')
+    w('                            attacks = { { cd = 7 } },')
+    w('                            tower = { attacks = { { cd = 2, cooldown = 5 } } } },')
+    # [11] 法术控制对象：steam.entities 里 template_name = power_<id>_control，cooldown 是它的直接字段
+    w('                    [11] = { id = 11, template_name = "power_rain_of_fire_control", cooldown = 9 },')
     # [7] 故意不连续，用来证明遍历真的走的是 pairs 而不是 1..#
     w('                    [7] = { id = 7, health = { hp_max = 100, hp = 100 },')
     w('                            motion = { max_speed = 20 } },')
-    w('                  } }')
+    w('                  },')
+    # 英雄技能冷却就记在英雄实体自己身上（skill_b_eagle_cd / ult_start_cd），
+    # attack_cd 是它的基础攻击 —— 那个不许清。
+    # 英雄技能冷却在实体上的 timed_attacks 容器里（探针实测：实体上**没有** *_cd 字段）；
+    # hero.skills 里也有一份。实体自己的 attack_cd 是基础攻击节奏，不许动。
+    w('                  hero_team = { { hero = { level = 3, skills = { { cooldown = 3 } } },')
+    w('                                  template_name = "hero_gerald", attack_cd = 2,')
+    w('                                  timed_attacks = { { cd = 4, ts = 12 } } } },')
+    w('                  }')
     w('  _G.game = { store = store }')
     w('  local src = io.open(M .. ' + Q + '_kr6trainer.lua' + Q + '):read(' + Q + '*a' + Q + ')')
     w('  local payload = loadstring(src, ' + Q + '_kr6trainer' + Q + ')')
@@ -219,6 +238,38 @@ def build_harness(release=False):
     w('  say(' + Q + 'mult_after_level_change' + Q + ', S.mult.enemy_hp)')
     w('  store.level_name = ' + Q + 'level05' + Q)
     w('  S.last_level_check = 0  pcall(fake.update)')
+    # ---- 技能无CD：三个开关各自定位目标，且一个字都不许误伤
+    w('  S.nocd.power, S.nocd.hero, S.nocd.tower = true, true, true')
+    w('  S.nocd_report, S.nocd_since = true, os.time() - 5')
+    w('  S.last_level_check = 0  pcall(fake.update)')
+    w('  local ht = store.hero_team[1]')
+    w('  say(' + Q + 'nocd_hero_ta_cd' + Q + ', ht.timed_attacks[1].cd)')
+    w('  say(' + Q + 'nocd_hero_ta_ts' + Q + ', ht.timed_attacks[1].ts)')
+    w('  say(' + Q + 'nocd_hero_skill_cd' + Q + ', ht.hero.skills[1].cooldown)')
+    w('  say(' + Q + 'nocd_hero_attack_kept' + Q + ', ht.attack_cd)')
+    w('  say(' + Q + 'nocd_tower_cd' + Q + ', store.entities[9].tower.attacks[1].cd)')
+    w('  say(' + Q + 'nocd_tower_cd2' + Q + ', store.entities[9].tower.attacks[1].cooldown)')
+    w('  say(' + Q + 'nocd_tower_own' + Q + ', store.entities[9].attacks[1].cd)')
+    w('  say(' + Q + 'nocd_tower_attack_kept' + Q + ', store.entities[9].attack_cd)')
+    w('  say(' + Q + 'nocd_enemy_kept' + Q + ', store.entities[2].attacks[1].cooldown)')
+    w('  say(' + Q + 'nocd_enemy_kept2' + Q + ', store.entities[2].timed_attacks[1].cd)')
+    w('  say(' + Q + 'nocd_power_entity_kept' + Q + ', store.entities[11].cooldown)')
+    # 法术：冷却**时长**在按钮自己身上（探针数字 diff 实测）—— 清 cooldown_time 一类；
+    # tm 里那份按英雄/塔同一套规则一起清。测试台没有 game_gui，直接喂几个假按钮。
+    w('  local kids = { { cooldown_time = 20, cooldown_max = 20, cooldown_min = 2,')
+    w('                    tm = { phase = 0.3, ts = 5 }, other = 7 } }')
+    w('  local acc2 = { seen = 0, cleared = 0 }')
+    w('  S.nocd_clear_buttons(kids, acc2)')
+    w('  say(' + Q + 'nocd_btn_cleared' + Q + ', acc2.cleared)')
+    w('  say(' + Q + 'nocd_btn_time' + Q + ', kids[1].cooldown_time)')
+    w('  say(' + Q + 'nocd_btn_max' + Q + ', kids[1].cooldown_max)')
+    w('  say(' + Q + 'nocd_btn_other_kept' + Q + ', kids[1].other)')
+    w('  say(' + Q + 'nocd_report_msg' + Q + ', S.msg)')
+    # 关掉就停手（游戏自己的冷却接着走）
+    w('  S.nocd.power, S.nocd.hero, S.nocd.tower = false, false, false')
+    w('  store.hero_team[1].timed_attacks[1].cd = 5')
+    w('  pcall(fake.update)')
+    w('  say(' + Q + 'nocd_off_kept' + Q + ', store.hero_team[1].timed_attacks[1].cd)')
     w('  say(' + Q + 'last_err' + Q + ', S.last_err)')
     # ---- 存档改写逻辑（S.slot_apply / S.slot_like 是刻意暴露给测试的）。
     # 测试环境没有 storage 模块、钩子装不上，所以直接调这两个函数。
@@ -325,19 +376,24 @@ def build_harness(release=False):
 
     # ---- 稀疏 entities 的回归：假 store 故意只放 [2] 和 [7]、没有 [1] —— 遍历写成
     # `for i = 1, #s.entities` 会一次都不进（# 返回 0），倍率整个静默失效。
+    # ⚠️ 活单位走相对缩放（按新旧倍率之比乘一次），这里必须把"上一次"钉成 1，
+    # 否则结果取决于前面用例留下的状态（顺序一变就假失败 —— 踩过）。
+    w('  S.mult_applied.enemy_hp, S.mult_applied.enemy_speed = 1, 1')
     w('  S.mult.enemy_hp = 5')
-    w('  pcall(fake.update)')
+    # 直接调活单位缩放那条（tick 的接线由 mult_active_after_raise 那条断言覆盖）；
+    # 走 tick 的话结果依赖前面用例留下的 prev，顺序一变就假失败 —— 踩过。
+    w('  pcall(S.mult_live)')
     w('  say(' + Q + 'hp_max_after' + Q + ', store.entities[2].health.hp_max)')
     w('  say(' + Q + 'hp_after' + Q + ', store.entities[2].health.hp)')
     w('  say(' + Q + 'hp_max_after_7' + Q + ', store.entities[7].health.hp_max)')
     w('  S.mult.enemy_speed = 2')
-    w('  pcall(fake.update)')
+    w('  pcall(S.mult_live)')
     w('  say(' + Q + 'speed_after' + Q + ', store.entities[2].motion.max_speed)')
     w('  say(' + Q + 'speed_after_7' + Q + ', store.entities[7].motion.max_speed)')
     w('  S.mult.enemy_speed = 1')
-    w('  pcall(fake.update)')
+    w('  pcall(S.mult_live)')
     w('  S.mult.enemy_hp = 1')
-    w('  pcall(fake.update)')
+    w('  pcall(S.mult_live)')
     w('  say(' + Q + 'hp_max_back' + Q + ', store.entities[2].health.hp_max)')
     # ---- 冒烟测试：把每个动作都从**菜单**跑一遍（v5 起玩家只有这条路）。
     # 专门抓「调用了声明在它上面的函数」—— 名字会静默解析成 nil 全局，只有那一个动作挂掉。
@@ -361,6 +417,8 @@ def build_harness(release=False):
     w('    end')
     w('  end')
     w('  say(' + Q + 'smoke_failures' + Q + ', table.concat(smoke, ' + Q + ' ;; ' + Q + '))')
+    # 遍历的最后一项是「关闭菜单」——后面还有绘制用例，这里必须再打开
+    w('  S.menu_open = true')
     w('  say(' + Q + 'smoke_ran' + Q + ', #(S.items or {}))')
     # 全部条目 id（含标题）。门控靠它做集合断言，别写回「项数必须等于 N」的硬编码 ——
     # 那样每加一个菜单项就得手改一次。
@@ -562,6 +620,40 @@ def main():
           "val=" + kv.get("mult_same_level", "?"))
     check(kv.get("mult_after_level_change") == "1", "换关后倍率自动归 1（v5 修的不复位问题）",
           "val=" + kv.get("mult_after_level_change", "?"))
+    # ---- 技能无CD（三个分开的开关；目标结构是探针实测的，不是猜的）
+    check(kv.get("nocd_hero_ta_cd") == "0" and kv.get("nocd_hero_ta_ts") == "0",
+          "英雄：timed_attacks 容器里的 cd / ts 清零",
+          "cd=%s ts=%s" % (kv.get("nocd_hero_ta_cd"), kv.get("nocd_hero_ta_ts")))
+    check(kv.get("nocd_hero_skill_cd") == "0", "英雄：hero.skills 里的 cooldown 也清",
+          kv.get("nocd_hero_skill_cd", "?"))
+    check(kv.get("nocd_hero_attack_kept") == "2",
+          "英雄实体自己的 attack_cd 不动（那是基础攻击节奏）",
+          kv.get("nocd_hero_attack_kept", "?"))
+    check(kv.get("nocd_tower_cd") == "0" and kv.get("nocd_tower_cd2") == "0",
+          "塔：**.tower 子表**里的 attacks 容器清零（探针实测：库存在那里）",
+          "cd=%s cooldown=%s" % (kv.get("nocd_tower_cd"), kv.get("nocd_tower_cd2")))
+    check(kv.get("nocd_tower_own") == "0", "塔实体自己那层的 attacks 也清",
+          kv.get("nocd_tower_own", "?"))
+    check(kv.get("nocd_tower_attack_kept") == "9",
+          "塔实体自己的 attack_cd 不动", kv.get("nocd_tower_attack_kept", "?"))
+    check(kv.get("nocd_enemy_kept") == "6" and kv.get("nocd_enemy_kept2") == "6",
+          "敌人的冷却**不许**被清（清了是加强敌人）",
+          "atk=%s ta=%s" % (kv.get("nocd_enemy_kept"), kv.get("nocd_enemy_kept2")))
+    check(kv.get("nocd_power_entity_kept") == "9",
+          "法术：不再乱清实体字段（控制对象不是关卡实体）", kv.get("nocd_power_entity_kept", "?"))
+    check(kv.get("nocd_btn_cleared") == "4",
+          "法术：按钮上的冷却时长（cooldown_time/max/min）+ tm.ts 共清 4 个",
+          "cleared=" + kv.get("nocd_btn_cleared", "?"))
+    check(kv.get("nocd_btn_time") == "0" and kv.get("nocd_btn_max") == "0",
+          "法术：cooldown_time / cooldown_max 归零",
+          "%s / %s" % (kv.get("nocd_btn_time"), kv.get("nocd_btn_max")))
+    check(kv.get("nocd_btn_other_kept") == "7", "法术：按钮上别的字段不动",
+          kv.get("nocd_btn_other_kept", "?"))
+    _msg = kv.get("nocd_report_msg") or ""
+    check(all(s in _msg for s in ("hero 3/3", "tower 3/3")),
+          "自检回执按类报 seen/cleared（hero 3/3 / tower 3/3；power 在测试台无模板模块，恒 0）", _msg)
+    check(kv.get("nocd_off_kept") == "5", "关掉后停手，冷却不再被清",
+          kv.get("nocd_off_kept", "?"))
     # 回归：**store.entities 是稀疏表**，必须用 pairs 而不是 1..#（细节见上面的假 store）。
     check(kv.get("hp_max_after") == "1000", "敌人血量倍率够得到稀疏实体表（不是 1..#）",
           "hp_max=" + kv.get("hp_max_after", "?"))
@@ -660,6 +752,7 @@ def main():
     for want in ("gold_add", "gold_sub", "lives_add", "lives_sub", "hold",
                  "hold_lives", "next_wave", "enemy_hp", "enemy_speed",
                  "stars_max", "unlock_tree", "power_max",
+                 "nocd_power", "nocd_hero", "nocd_tower",
                  "hero_now_up", "hero_now_max", "close"):
         check(want in ids, "菜单含 " + want)
     # **不该**有的：删掉的那些必须真的不在 —— 免得哪天又把未验证的东西混回来
