@@ -436,6 +436,17 @@ def build_harness(release=False):
     w('  say(' + Q + 'smoke_ran' + Q + ', #(S.items or {}))')
     # 全部条目 id（含标题）。门控靠它做集合断言，别写回「项数必须等于 N」的硬编码 ——
     # 那样每加一个菜单项就得手改一次。
+    # 三个开关**各按两次**（开→关）：关那一路才是"还原"路径 —— 冒烟只按一次抓不到
+    # （踩过：nocd_restore 被解析成 nil，开的时候没事、关的时候报错）。
+    w('  S.last_err = nil')
+    w('  S.nocd.power, S.nocd.hero, S.nocd.tower = false, false, false   -- 冒烟把它们留在开了')
+    w('  S.menu_open = true')
+    w('  for _, id2 in ipairs({ ' + Q + 'nocd_power' + Q + ', ' + Q + 'nocd_hero' + Q + ', ' + Q + 'nocd_tower' + Q + ' }) do')
+    w('    pick(id2) key(' + Q + 'return' + Q + ')   -- 开')
+    w('    pick(id2) key(' + Q + 'return' + Q + ')   -- 关（走还原）')
+    w('  end')
+    w('  say(' + Q + 'nocd_toggle_err' + Q + ', S.last_err)')
+    w('  say(' + Q + 'nocd_toggle_off' + Q + ', tostring(S.nocd.power) .. ' + Q + ',' + Q + ' .. tostring(S.nocd.hero) .. ' + Q + ',' + Q + ' .. tostring(S.nocd.tower))')
     w('  local ids = {}')
     w('  for _, it in ipairs(S.items or {}) do ids[#ids+1] = tostring(it.id) end')
     w('  say(' + Q + 'all_item_ids' + Q + ', table.concat(ids, ' + Q + ',' + Q + '))')
@@ -666,6 +677,9 @@ def main():
     check(kv.get("nocd_rev_zeroed") == "0" and kv.get("nocd_rev_restored") == "8",
           "可逆性：英雄技能的 cd 被清零后，关掉开关能写回原值（8）",
           "%s -> %s" % (kv.get("nocd_rev_zeroed"), kv.get("nocd_rev_restored")))
+    check(kv.get("nocd_toggle_err") == "nil" and kv.get("nocd_toggle_off") == "false,false,false",
+          "三个开关「开→关」各走一遍都无错，且关完确实是关（还原路径可达）",
+          "err=%s off=%s" % (kv.get("nocd_toggle_err"), kv.get("nocd_toggle_off")))
     check(kv.get("nocd_rev_btn_zeroed") == "0" and kv.get("nocd_rev_btn_restored") == "20",
           "可逆性：法术按钮的 cooldown_time 清掉后能写回原值（20）",
           "%s -> %s" % (kv.get("nocd_rev_btn_zeroed"), kv.get("nocd_rev_btn_restored")))

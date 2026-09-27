@@ -182,6 +182,7 @@ end
 -- 定义处**必须**写成 `名字 = function() ... end`，写成 `local function` 这里仍是 nil。
 local game_mod, balance_of, scale_table, mult_apply, mult_apply_live, queue_slot_op
 local na, hero_thresholds, power_thresholds, hero_raise
+local nocd_restore
 
 local function action(id, arg)
   if id == "gold_set" then
@@ -498,7 +499,7 @@ local function cd_set(obj, k, v)
 end
 
 -- 关掉任一个开关时把记下的原值全部写回（还开着的那些下一帧会重新清）
-local function nocd_restore()
+nocd_restore = function()
   local n = 0
   for obj, box in pairs(S.nocd_base) do
     if type(obj) == "table" then
