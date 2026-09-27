@@ -70,6 +70,9 @@ end
 if type(S.nocd_base) ~= "table" then
   S.nocd_base = setmetatable({}, { __mode = "k" })
 end
+-- 击杀金币翻倍的开关与基线（基线按倍率表的键记，见 gold_push）
+if S.gold2x == nil then S.gold2x = false end
+if type(S.gold_base) ~= "table" then S.gold_base = {} end
 -- 存档钩子的登记表与待应用的存档操作队列
 if type(S.slot_hooks) ~= "table" then S.slot_hooks = {} end
 if type(S.slot_ops) ~= "table" then S.slot_ops = {} end
@@ -180,9 +183,10 @@ end
 -- actions
 -- 前向声明：action() 调的这几个函数定义在文件更下面（否则解析成同名全局变量 = 静默失效）。
 -- 定义处**必须**写成 `名字 = function() ... end`，写成 `local function` 这里仍是 nil。
-local game_mod, balance_of, scale_table, mult_apply, mult_apply_live, queue_slot_op
+local game_mod, scale_table, mult_apply, mult_apply_live, queue_slot_op
 local na, hero_thresholds, power_thresholds, hero_raise
 local nocd_restore
+local gold_factor_tbl, gold_pop, install_gold_hook
 
 local function action(id, arg)
   if id == "gold_set" then
@@ -207,6 +211,16 @@ local function action(id, arg)
     note("生命锁定: " .. (S.hold_lives and "开" or "关"),
          "lock lives: " .. (S.hold_lives and "ON" or "OFF"))
     return "hold_lives=" .. tostring(S.hold_lives)
+  elseif id == "gold_x2" then
+    S.gold2x = not S.gold2x
+    if S.gold2x then
+      install_gold_hook()          -- 点开时补装一次：进关卡前 systems 可能还没 require
+    else
+      gold_pop(gold_factor_tbl())  -- 关掉立刻还原，不等下一趟钩子
+    end
+    local r = "击杀金币翻倍: " .. (S.gold2x and "开" or "关")
+    note(r, "kill gold x2: " .. (S.gold2x and "on" or "off"))
+    return r
   elseif id == "lives_sub" then
     local r = add_field("lives", -(tonumber(arg) or 10))
     note(r) return r
@@ -321,30 +335,74 @@ na = function(what)
   return "n/a: " .. tostring(what)
 end
 
--- balance 表（敌人数值的源）**不在 package.loaded 里**，只能从 upgrades 模块
--- 两个函数的 upvalue 拿。按**名字**找而不是按下标 —— 下标是反编译猜的。
-balance_of = function()
-  local up = game_mod("upgrades")
-  if not up then return nil end
-  local fns = { "get_points_by_level", "patch_templates" }
-  for i = 1, #fns do
-    local f = up[fns[i]]
-    if type(f) == "function" then
-      for j = 1, 60 do
-        local ok, name, val = pcall(debug.getupvalue, f, j)
-        if not ok or name == nil then break end
-        if name == "balance" and type(val) == "table" then return val end
-      end
-    end
-  end
-  return nil
+-- 击杀金币翻倍。**只加倍击杀，不加倍漏怪。**
+--
+-- 击杀与漏怪共用同一个倍率表达式，但各自在函数开头读一次，落在两个不同的系统里：
+--   all/systems.lua:1985  sys.health:on_update      ← 击杀
+--   all/systems.lua:2404  sys.goal_line:on_update   ← 漏怪也给钱，且不发 got-enemy-gold
+-- 所以把「表 ×2」限制在 sys.health:on_update 这一趟里就够了，漏怪那趟读到的还是原值。
+-- 调度器每条 tick 现查 `sys:on_update`（lib/klove/simulation.lua:127），包住表上的函数即生效。
+--
+-- 为什么不改 enemy.gold / balance：那是数值来源，扣钱与退款路径不读倍率表，改表零误伤。
+-- 为什么不用 hand_of_midas_factor：那个每击杀一次就播一遍金币飞行动画和音效。
+local GOLD_FACTOR_TBL = "gold_enemy_factor_per_mode"
+
+gold_factor_tbl = function()
+  local GS = game_mod("game_settings")
+  local t = (type(GS) == "table") and rawget(GS, GOLD_FACTOR_TBL) or nil
+  return (type(t) == "table") and t or nil
 end
 
--- 敌人字段：balance 里 hp 是**按等级分的数组**（{80,100,120,250}）、speed 是标量，活实体
--- 上是 health 表。⚠️ 这几项参与每帧重放，**绝不能碰当前血量**（每帧写回 = 打不死）。
+-- 表 → 基线 ×2。基线只在第一次见面时记（游戏自己从不写这张表，写点为零）。
+local function gold_push()
+  local t = gold_factor_tbl()
+  if not t then return nil end
+  for k, v in pairs(t) do
+    if type(v) == "number" then
+      if S.gold_base[k] == nil then S.gold_base[k] = v end
+      local want = S.gold_base[k] * 2
+      if v ~= want then t[k] = want end
+    end
+  end
+  return t
+end
+
+-- 还原成基线。传进来的表为 nil 时什么都不做。
+gold_pop = function(t)
+  if type(t) ~= "table" then return end
+  for k, v in pairs(S.gold_base) do
+    if t[k] ~= v then t[k] = v end
+  end
+end
+
+install_gold_hook = function()
+  if S.gold_hook_done then return false end
+  local sys = game_mod("systems")
+  local h = (type(sys) == "table") and rawget(sys, "health") or nil
+  local orig = (type(h) == "table") and rawget(h, "on_update") or nil
+  if type(orig) ~= "function" then return false end
+  S.gold_hook_done = true
+  rawset(h, "on_update", function(...)
+    if not S.gold2x then return orig(...) end
+    local t = gold_push()
+    -- 出错也要还原：否则表永远停在 ×2 上，漏怪金币也跟着翻倍。
+    local ok, a, b, c, d = pcall(orig, ...)
+    gold_pop(t)
+    if not ok then error(a) end
+    return a, b, c, d
+  end)
+  S.hooks[#S.hooks + 1] = "systems.health.on_update(gold x2)"
+  return true
+end
+
+-- 敌人字段的真实路径（源码：kr6/templates_game.lua 里 tt.health.hp_max = b.hp、
+-- tt.motion.max_speed = b.speed）—— **都在子表里**，不在模板/实体顶层：
+--   模板   t.health.hp_max / t.motion.max_speed
+--   活实体 e.health.hp_max / e.motion.max_speed
+-- ⚠️ 这几项参与每帧重放，**绝不能碰当前血量**（每帧写回 = 打不死）。
+-- motion.speed 是**向量**不是数字（all/components.lua），类型检查会跳过，列着无害。
 local ENEMY_HP_FIELDS    = { hp_max = true }
-local ENEMY_HP_ARRAYS    = { hp = true }
-local ENEMY_SPEED_FIELDS = { speed = true, speed_limit = true, max_speed = true }
+local ENEMY_SPEED_FIELDS = { max_speed = true, speed_limit = true, speed = true }
 
 -- 把属于 fields 的 number 字段缩放到 base*mult，返回改了几个。基线记进 S.mult_base：
 -- 游戏自己的 patch_templates 是**原地乘**，不记基线的话每帧反复调会复合（翻倍再翻倍）。
@@ -355,7 +413,9 @@ scale_table = function(t, fields, mult)
   local n = 0
   for k, v in pairs(t) do
     if fields[k] and type(v) == "number" then
-      if base[k] == nil then base[k] = v end
+      -- 基线只记一次；**记到非数字时要重记** —— 模板上的 hp_max 在关卡初始化时会被
+      -- difficulty:patch_templates 从「按难度分的数组」就地换成数字，那一刻类型会变。
+      if type(base[k]) ~= "number" then base[k] = v end
       local want = base[k] * mult
       -- 只写确实不同的：稳定后这里是纯读，不搅动游戏的表
       if t[k] ~= want then t[k] = want n = n + 1 end
@@ -364,69 +424,42 @@ scale_table = function(t, fields, mult)
   return n
 end
 
--- 数组字段的版本：逐元素缩放，基线也逐元素记。
-local function scale_arrays(t, fields, mult)
-  if type(t) ~= "table" then return 0 end
-  local n = 0
-  for k, v in pairs(t) do
-    if fields[k] and type(v) == "table" then
-      local base = S.mult_base[t]
-      if not base then base = {} S.mult_base[t] = base end
-      local b = base[k]
-      if type(b) ~= "table" then b = {} base[k] = b end
-      for i = 1, #v do
-        local cur = v[i]
-        if type(cur) == "number" then
-          if b[i] == nil then b[i] = cur end
-          local want = b[i] * mult
-          if cur ~= want then v[i] = want n = n + 1 end
-        end
-      end
-    end
-  end
-  return n
-end
+-- 数组字段的版本：**已删**。它只服务 balance 那条路径，而那条路径必须去掉（见 mult_apply）——
+-- 模板上的 hp_max 在关卡初始化时会被 difficulty:patch_templates 从数组**就地换成数字**，
+-- 若先缩了数组元素、再缩换出来的数字，就变成平方。
 
-
--- 遍历 entity_db 里的模板，每个调一次 fn。先试注册表字段绕开 filter_templates ——
--- 它的 self 该传什么没有实证，故几种形态都试并记进 S.tpl_shape。
+-- 遍历 entity_db 里的模板，每个调一次 fn。
+-- 注册表就是 `entity_db.entities`（all/entity_db.lua 的 load() 里建、register_t 里写）。
+-- 不用 filter_templates()：它每次都 `self:filter(self.entities)` **新建一张全模板表**（2054 项）。
 -- 返回**访问到的模板个数**（不是 fn 返回值之和 —— 回调可能恒返回 0）。
 local function each_template(edb, fn)
   if type(edb) ~= "table" then return 0 end
-  local regs = { "templates", "templates_game", "templates_all" }
-  for i = 1, #regs do
-    local reg = edb[regs[i]]
-    if type(reg) == "table" then
-      local seen = 0
-      for _, t in pairs(reg) do
-        if type(t) == "table" then seen = seen + 1 fn(t) end
-      end
-      if seen > 0 then S.tpl_shape = "field:" .. regs[i] return seen end
+  local reg = rawget(edb, "entities")
+  if type(reg) ~= "table" then
+    -- 兜底：万一将来改名，退回游戏自己的过滤器（等价于遍历同一张表，只是多分配一次）
+    if type(edb.filter_templates) ~= "function" then return 0 end
+    local ok, list = pcall(edb.filter_templates, edb)
+    if not ok or type(list) ~= "table" then return 0 end
+    local seen = 0
+    for i = 1, #list do
+      local t = list[i]
+      if type(t) == "table" then seen = seen + 1 fn(t) end
     end
+    return seen
   end
-  if type(edb.filter_templates) ~= "function" then return 0 end
-  local shapes = {
-    { "filter_templates(edb)",  function() return edb.filter_templates(edb) end },
-    { "filter_templates()",     function() return edb.filter_templates() end },
-    { "filter_templates(game)", function() return edb.filter_templates(_G.game) end },
-  }
-  for i = 1, #shapes do
-    local ok, list = pcall(shapes[i][2])
-    if ok and type(list) == "table" and #list > 0 then
-      S.tpl_shape = shapes[i][1]
-      local seen = 0
-      for j = 1, #list do
-        local t = list[j]
-        if type(t) == "table" then seen = seen + 1 fn(t) end
-      end
-      return seen
-    end
+  local seen = 0
+  for _, t in pairs(reg) do
+    if type(t) == "table" then seen = seen + 1 fn(t) end
   end
-  return 0
+  return seen
 end
 
--- 每帧重放所有倍率。模板决定**之后**生成的对象，所以模板与 balance 都要写 ——
--- entity_db 生成对象时内部深拷贝（局部函数，外部判断不了时机），只能两边都写。
+-- 每帧重放所有倍率。**只写模板，绝不写 balance。**
+--
+-- 敌人是从模板深拷贝出来的（all/entity_db.lua 的 create_entity 里 `copy(tpl)`），所以改模板
+-- 就能影响之后生成的每一个。而模板自己在**每关开头**由 `sys.level:init` 里的 `E:load()`
+-- 从 balance 重建 —— 若两边都写，下一关的模板拿到的就是已经乘过一次的 balance，直接变平方。
+-- 只写模板还有个好处：关内改倍率**立刻**对新出场的敌人生效（写 balance 得等下一关）。
 mult_apply = function()
   local m = S.mult
   local hp, sp = m.enemy_hp, m.enemy_speed
@@ -434,30 +467,14 @@ mult_apply = function()
 
   local edb = game_mod("entity_db")
   each_template(edb, function(t)
-    local nm = tostring(t.template_name or t.name or "")
+    local nm = tostring(rawget(t, "template_name") or rawget(t, "name") or "")
     if nm:sub(1, 6) == "enemy_" then
-      n = n + scale_table(t, ENEMY_HP_FIELDS, hp)
-      n = n + scale_arrays(t, ENEMY_HP_ARRAYS, hp)
-      n = n + scale_table(t, ENEMY_SPEED_FIELDS, sp)
+      local hl = rawget(t, "health")
+      if type(hl) == "table" then n = n + scale_table(hl, ENEMY_HP_FIELDS, hp) end
+      local mo = rawget(t, "motion")
+      if type(mo) == "table" then n = n + scale_table(mo, ENEMY_SPEED_FIELDS, sp) end
     end
   end)
-
-  local bal = balance_of()
-  if type(bal) == "table" then
-    local en = bal.enemies
-    if type(en) == "table" then
-      for _, grp in pairs(en) do
-        if type(grp) == "table" then
-          for _, e in pairs(grp) do
-            if type(e) == "table" then
-              n = n + scale_arrays(e, ENEMY_HP_ARRAYS, hp)
-              n = n + scale_table(e, ENEMY_SPEED_FIELDS, sp)
-            end
-          end
-        end
-      end
-    end
-  end
 
   return n
 end
@@ -1014,47 +1031,49 @@ end
 
 -- 暴露给测试台：测试环境里没有 storage 模块、钩子装不上，而存档改写必须能单独测。
 S.mult_live = mult_apply_live        -- 暴露给测试台：倍率那条在测试里要能单独调
+S.mult_apply = mult_apply            -- 模板那条（测试台没有 entity_db，直接喂一张假模板表）
 S.nocd_clear_buttons = clear_button_list   -- 测试台没有 game_gui，直接喂几个假按钮
 S.nocd_clear_entity = clear_entity_cds     -- 同上：英雄/塔那条
 S.nocd_restore = nocd_restore              -- 关掉开关时要能还原（可逆性测试）
 S.slot_apply = apply_slot_ops
 S.slot_like = is_slot_like
+S.gold_push = gold_push              -- 测试台：击杀金币 ×2 那条要能单独驱动
+S.gold_pop = gold_pop
+S.gold_install = install_gold_hook
 
--- 在哪几个函数上装钩子。各函数签名不一致（收文本/收表都有），所以**参数和返回值都扫
--- 一遍**，是存档形状的就动手 —— 不必猜哪个方向是表。
+-- 存档只在**两个**函数上过（签名已从源码确认，不必再猜）：
+--   读 storage:load_lua(filename, force)      → 存档是**返回值**
+--   写 storage:save_slot(data_table, idx, ..) → 存档是**第一个参数**
+-- 读为什么挂 load_lua 而不是 load_slot：load_slot 自己就是调 load_lua，
+-- 而且 main.lua 也有一条绕过 load_slot 直接用 load_lua 读存档文件的路。
+-- save_slot 是 slot 文件**唯一**的写入者（delete_slot 只删不写）。
+-- （原先挂的 deserialize_lua/serialize_lua 只在**平台云同步**里被调，桌面本地路径根本不经过。）
 local SLOT_HOOKS = {
-  { "storage", { "deserialize_lua", "serialize_lua", "load_lua", "write_lua",
-                 "load_slot", "save_slot" } },
-  { "storage_io_generic", { "load_file", "write_file" } },
+  { "storage", "load_lua",  "ret" },
+  { "storage", "save_slot", "arg" },
 }
 
 local function install_slot_hooks()
   local done = 0
   for i = 1, #SLOT_HOOKS do
     local mod = game_mod(SLOT_HOOKS[i][1])
+    local key, mode = SLOT_HOOKS[i][2], SLOT_HOOKS[i][3]
     if type(mod) == "table" then
-      local keys = SLOT_HOOKS[i][2]
-      for j = 1, #keys do
-        local key = keys[j]
-        local orig = rawget(mod, key)
-        local flag = "slot_" .. key
-        if type(orig) == "function" and not S.wrap_src[flag] then
-          S.wrap_src[flag] = true
-          rawset(mod, key, function(...)
-            for a = 1, select("#", ...) do
-              local v = select(a, ...)
-              if is_slot_like(v) then apply_slot_ops(v) end
-            end
-            local r1, r2, r3, r4 = orig(...)
-            if is_slot_like(r1) then apply_slot_ops(r1) end
-            if is_slot_like(r2) then apply_slot_ops(r2) end
-            if is_slot_like(r3) then apply_slot_ops(r3) end
-            if is_slot_like(r4) then apply_slot_ops(r4) end
-            return r1, r2, r3, r4
-          end)
-          S.slot_hooks[#S.slot_hooks + 1] = SLOT_HOOKS[i][1] .. "." .. key
-          done = done + 1
-        end
+      local orig = rawget(mod, key)
+      local flag = "slot_" .. key
+      if type(orig) == "function" and not S.wrap_src[flag] then
+        S.wrap_src[flag] = true
+        rawset(mod, key, function(...)
+          if mode == "arg" then
+            local a = ...
+            if is_slot_like(a) then apply_slot_ops(a) end
+          end
+          local r1, r2, r3, r4 = orig(...)
+          if mode == "ret" and is_slot_like(r1) then apply_slot_ops(r1) end
+          return r1, r2, r3, r4
+        end)
+        S.slot_hooks[#S.slot_hooks + 1] = SLOT_HOOKS[i][1] .. "." .. key
+        done = done + 1
       end
     end
   end
@@ -1094,6 +1113,7 @@ local MENU_TEXT = {
     gold_add = "金币 +1000", gold_sub = "金币 -1000",
     lives_add = "生命 +10", lives_sub = "生命 -10",
     hold = "无限金钱", hold_lives = "生命锁定",
+    gold_x2 = "击杀金币翻倍",
     next_wave = "立刻下一波",
     hdr_res = "资源", hdr_wave = "波次", hdr_units = "敌人属性",
     hdr_hero = "英雄",
@@ -1113,6 +1133,7 @@ local MENU_TEXT = {
     gold_add = "gold +1000", gold_sub = "gold -1000",
     lives_add = "lives +10", lives_sub = "lives -10",
     hold = "infinite gold", hold_lives = "lock lives",
+    gold_x2 = "kill gold x2",
     next_wave = "next wave now",
     hdr_res = "RESOURCES", hdr_wave = "WAVES", hdr_units = "ENEMY STATS",
     hdr_hero = "HEROES",
@@ -1169,6 +1190,8 @@ local function menu_items()
     { id = "lives_sub", label = L("lives_sub"), adjust = { field = "lives", step = 10, sign = -1 } },
     { id = "hold",      label = L("hold"), toggle = function() return S.hold end },
     { id = "hold_lives", label = L("hold_lives"), toggle = function() return S.hold_lives end },
+    -- 击杀金币翻倍。**只加倍击杀**：漏怪也给金币，但那条走另一个系统，不受这里影响。
+    { id = "gold_x2",   label = L("gold_x2"), toggle = function() return S.gold2x end },
 
     { id = "hdr_wave",  label = L("hdr_wave"), header = true },
     { id = "next_wave", label = L("next_wave") },
@@ -1556,6 +1579,9 @@ local function tick(source)
     local n = install_slot_hooks()
     if n > 0 or (game_mod("storage") ~= nil) then S.slot_hooks_done = true end
   end
+
+  -- 金币钩子同理：systems 可能比 payload 晚 require，每帧试装一次，装上就不再试。
+  if not S.gold_hook_done then install_gold_hook() end
 
   -- 存档改动的回执。钩子里不能调 note()（在 storage 的 IO 边界上，重入），所以结果
   -- 先留在 S 里，在这里组装成人话。

@@ -103,6 +103,35 @@ def build_harness(release=False):
     w('                                  timed_attacks = { { cd = 4, ts = 12 } } } },')
     w('                  }')
     w('  _G.game = { store = store }')
+    # 金币 2 倍用的两个假模块。形状照抄 all/systems.lua：**倍率在函数开头读一次**，
+    # 这样才测得出「钩子只在 health 那一趟把表改成 ×2」——读第二次就不准了。
+    # goal_line 是漏怪系统，它读同一张表，用来证明漏怪**没**被带上。
+    w('  local GS = { gold_enemy_factor_per_mode = { 1, 0, 1, 0, 1, 1.5, 2.5, 1 } }')
+    w('  package.loaded.game_settings = GS')
+    w('  local seen_health, seen_goal, seen_idx6, seen_idx2 = nil, nil, nil, nil')
+    w('  local fake_systems = {}')
+    # 三个下标都在**函数内部**读：×2 只存在于这一趟调用期间，出了函数表就还原了。
+    w('  fake_systems.health = { on_update = function(self, dt, ts, st)')
+    w('    seen_health = GS.gold_enemy_factor_per_mode[1]')
+    w('    seen_idx6 = GS.gold_enemy_factor_per_mode[6]')
+    w('    seen_idx2 = GS.gold_enemy_factor_per_mode[2]')
+    w('  end }')
+    w('  fake_systems.goal_line = { on_update = function(self, dt, ts, st)')
+    w('    seen_goal = GS.gold_enemy_factor_per_mode[1]')
+    w('  end }')
+    w('  package.loaded.systems = fake_systems')
+    # 模板倍率的假数据。形状照抄真实模板（源码：tt.health.hp_max = b.hp、
+    # tt.motion.max_speed = b.speed）—— 值都在**子表**里，不在顶层。
+    w('  local tpl_enemy = { template_name = ' + Q + 'enemy_bandit' + Q +
+      ', health = { hp_max = 100 }, motion = { max_speed = 50 } }')
+    w('  local tpl_tower = { template_name = ' + Q + 'tower_forger_lvl4' + Q +
+      ', health = { hp_max = 999 }, motion = { max_speed = 77 } }')
+    w('  package.loaded.entity_db = { entities = { enemy_x = tpl_enemy, tower_x = tpl_tower } }')
+    # 假 balance：**必须一个数都不被碰**。模板每关开头从它重建（E:load），
+    # 两边都写会让下一关拿到已乘过一次的值，直接平方。
+    w('  local bal_unit = { hp = { 100, 100, 100, 100 }, speed = 50 }')
+    w('  package.loaded[' + Q + 'data.balance.balance' + Q +
+      '] = { enemies = { grp = { unit = bal_unit } } }')
     w('  local src = io.open(M .. ' + Q + '_kr6trainer.lua' + Q + '):read(' + Q + '*a' + Q + ')')
     w('  local payload = loadstring(src, ' + Q + '_kr6trainer' + Q + ')')
     w('  fake = { calls = { keypressed = 0, mousepressed = 0, draw = 0, update = 0 } }')
@@ -193,6 +222,21 @@ def build_harness(release=False):
     w('  store.player_gold = 5  pcall(fake.update)')
     w('  say(' + Q + 'gold_after_hold' + Q + ', store.player_gold)')
     w('  pick(' + Q + 'hold' + Q + ') key(' + Q + 'return' + Q + ')      -- 关掉')
+    # ---- 击杀金币 ×2（走真菜单项 + 真钩子；只该影响击杀，不该影响漏怪）
+    w('  pick(' + Q + 'gold_x2' + Q + ') key(' + Q + 'return' + Q + ')')
+    w('  say(' + Q + 'gold_x2_on' + Q + ', S.gold2x)')
+    w('  fake_systems.health:on_update(0, 0, store)')
+    w('  say(' + Q + 'gold_kill_seen' + Q + ', seen_health)')
+    w('  say(' + Q + 'gold_idx6' + Q + ', seen_idx6)')
+    w('  say(' + Q + 'gold_idx2' + Q + ', seen_idx2)')
+    w('  fake_systems.goal_line:on_update(0, 0, store)')
+    w('  say(' + Q + 'gold_goal_seen' + Q + ', seen_goal)')
+    w('  say(' + Q + 'gold_outside' + Q + ', GS.gold_enemy_factor_per_mode[1])')
+    w('  pick(' + Q + 'gold_x2' + Q + ') key(' + Q + 'return' + Q + ')      -- 关掉')
+    w('  say(' + Q + 'gold_x2_off' + Q + ', S.gold2x)')
+    w('  fake_systems.health:on_update(0, 0, store)')
+    w('  say(' + Q + 'gold_kill_off' + Q + ', seen_health)')
+    w('  say(' + Q + 'gold_restored' + Q + ', GS.gold_enemy_factor_per_mode[1])')
     # ---- 每个菜单项都必须有可用标签（标签为 nil 会让整个面板静默消失）
     # 标签 == id 是 menu_items() 里 L(id) 回退的特征（MENU_TEXT 漏了这条文案，cn/en 任一边），
     # 所以只能这么查：光查「非空字符串」永远为真，等于没测。
@@ -409,6 +453,24 @@ def build_harness(release=False):
     w('  S.mult.enemy_hp = 1')
     w('  pcall(S.mult_live)')
     w('  say(' + Q + 'hp_max_back' + Q + ', store.entities[2].health.hp_max)')
+    # ---- 模板倍率：**只写模板、且写对子表**（这条路径以前完全没被测过）
+    w('  S.mult.enemy_hp, S.mult.enemy_speed = 2, 2')
+    w('  pcall(S.mult_apply)')
+    w('  say(' + Q + 'tpl_hp' + Q + ', tpl_enemy.health.hp_max)')
+    w('  say(' + Q + 'tpl_speed' + Q + ', tpl_enemy.motion.max_speed)')
+    w('  say(' + Q + 'tpl_tower_hp' + Q + ', tpl_tower.health.hp_max)')
+    w('  say(' + Q + 'tpl_tower_speed' + Q + ', tpl_tower.motion.max_speed)')
+    # 再跑一遍不能复合（基线只记一次）
+    w('  pcall(S.mult_apply)')
+    w('  say(' + Q + 'tpl_hp_twice' + Q + ', tpl_enemy.health.hp_max)')
+    # balance 一个数都不能动
+    w('  say(' + Q + 'tpl_bal_hp' + Q + ', bal_unit.hp[1])')
+    w('  say(' + Q + 'tpl_bal_speed' + Q + ', bal_unit.speed)')
+    # 调回 x1 要还原
+    w('  S.mult.enemy_hp, S.mult.enemy_speed = 1, 1')
+    w('  pcall(S.mult_apply)')
+    w('  say(' + Q + 'tpl_hp_back' + Q + ', tpl_enemy.health.hp_max)')
+    w('  say(' + Q + 'tpl_speed_back' + Q + ', tpl_enemy.motion.max_speed)')
     # ---- 冒烟测试：把每个动作都从**菜单**跑一遍（v5 起玩家只有这条路）。
     # 专门抓「调用了声明在它上面的函数」—— 名字会静默解析成 nil 全局，只有那一个动作挂掉。
     w('  local smoke = {}')
@@ -619,6 +681,26 @@ def main():
     check(kv.get("hold_on") == "true", "无限金钱可开关")
     check(kv.get("gold_after_hold") == "999999", "无限金钱花掉后自动补满",
           "gold=" + kv.get("gold_after_hold", "?"))
+    # ---- 击杀金币 ×2：**只**加倍击杀。击杀与漏怪共用同一个倍率表达式，靠「只在
+    # sys.health:on_update 这一趟把表 ×2」区分开，所以这三条要一起看。
+    check(kv.get("gold_x2_on") == "true", "击杀金币翻倍可开关",
+          kv.get("gold_x2_on", "?"))
+    check(kv.get("gold_kill_seen") == "2", "击杀系统读到的是 ×2",
+          "seen=" + kv.get("gold_kill_seen", "?"))
+    check(kv.get("gold_idx6") == "3", "整张倍率表按基线 ×2（1.5 -> 3），不是只改当前模式",
+          "idx6=" + kv.get("gold_idx6", "?"))
+    check(kv.get("gold_idx2") == "0",
+          "基线是 0 的格子不会被弄成非 0（HEROIC/ENDLESS 击杀本来就不给钱）",
+          "idx2=" + kv.get("gold_idx2", "?"))
+    check(kv.get("gold_goal_seen") == "1", "漏怪系统读到的仍是原值（没被带上）",
+          "seen=" + kv.get("gold_goal_seen", "?"))
+    check(kv.get("gold_outside") == "1", "钩子跑完表就还原，不会留在 ×2 上",
+          "tbl=" + kv.get("gold_outside", "?"))
+    check(kv.get("gold_x2_off") == "false", "再按一次关掉", kv.get("gold_x2_off", "?"))
+    check(kv.get("gold_kill_off") == "1", "关掉后击杀回到原值",
+          "seen=" + kv.get("gold_kill_off", "?"))
+    check(kv.get("gold_restored") == "1", "关掉后倍率表已还原",
+          "tbl=" + kv.get("gold_restored", "?"))
     check(kv.get("labelless_items") == "", "每个菜单项都有标签", kv.get("labelless_items", "?"))
     # （命令文件通道已在 v5 从发行版移除，对应的断言一并删掉）
     check(kv.get("last_err") == "nil", "全程未记录任何错误", kv.get("last_err", "?"))
@@ -701,6 +783,23 @@ def main():
           "speed[7]=" + kv.get("speed_after_7", "?"))
     check(kv.get("hp_max_back") == "200", "调回 x1 血量能还原",
           "hp_max=" + kv.get("hp_max_back", "?"))
+    # ---- 模板倍率：值在**子表**里（t.health.hp_max / t.motion.max_speed），
+    # 改顶层 hp_max/speed 是永远匹配不上的（那就是修之前"一直空转"的原因）。
+    check(kv.get("tpl_hp") == "200", "模板血量：写的是 t.health.hp_max（不是顶层 hp_max）",
+          "hp_max=" + kv.get("tpl_hp", "?"))
+    check(kv.get("tpl_speed") == "100", "模板移速：写的是 t.motion.max_speed",
+          "speed=" + kv.get("tpl_speed", "?"))
+    check(kv.get("tpl_tower_hp") == "999" and kv.get("tpl_tower_speed") == "77",
+          "只动 enemy_* 模板，塔/英雄一个都不碰",
+          "%s / %s" % (kv.get("tpl_tower_hp", "?"), kv.get("tpl_tower_speed", "?")))
+    check(kv.get("tpl_hp_twice") == "200", "重放两次不复合（基线只记一次）",
+          "hp_max=" + kv.get("tpl_hp_twice", "?"))
+    check(kv.get("tpl_bal_hp") == "100" and kv.get("tpl_bal_speed") == "50",
+          "balance **一个数都不动**（模板每关开头从它重建，写它会变成平方）",
+          "%s / %s" % (kv.get("tpl_bal_hp", "?"), kv.get("tpl_bal_speed", "?")))
+    check(kv.get("tpl_hp_back") == "100" and kv.get("tpl_speed_back") == "50",
+          "模板倍率调回 x1 能还原",
+          "%s / %s" % (kv.get("tpl_hp_back", "?"), kv.get("tpl_speed_back", "?")))
     # ---- 存档改写（会动玩家数据，单独测）
     check(kv.get("slot_like_ok") == "true", "存档指纹认得真存档表",
           kv.get("slot_like_ok", "?"))
@@ -784,7 +883,7 @@ def main():
     ids = kv.get("all_item_ids", "").split(",")
     # 精简版**应该**有的（金币/生命/无限金钱 + 敌人血量/移速 + 星星/升级树）
     for want in ("gold_add", "gold_sub", "lives_add", "lives_sub", "hold",
-                 "hold_lives", "next_wave", "enemy_hp", "enemy_speed",
+                 "hold_lives", "gold_x2", "next_wave", "enemy_hp", "enemy_speed",
                  "stars_max", "unlock_tree", "power_max",
                  "nocd_power", "nocd_hero", "nocd_tower",
                  "hero_now_up", "hero_now_max", "close"):
