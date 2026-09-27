@@ -1127,6 +1127,8 @@ local MENU_TEXT = {
     on = "开", off = "关",
     labels = { "金币", "生命", "关卡" },
     nolvl = "（未进入关卡）",
+    credit = "B站: LOVEIII486",
+    warn = "如果你花钱购买说明你被骗了",
   },
   en = {
     title = "KR6 TRAINER", hint = "home / tab toggles   up/down   left/right   enter   esc",
@@ -1148,6 +1150,8 @@ local MENU_TEXT = {
     on = "ON", off = "OFF",
     labels = { "gold", "lives", "lvl" },
     nolvl = "(not in a level)",
+    credit = "bilibili: LOVEIII486",
+    warn = "if you paid money for this, you were scammed",
   },
 }
 
@@ -1286,6 +1290,9 @@ local function font_for_height(want_h)
 end
 
 local MENU_X, MENU_Y, MENU_W = 60, 90, 430
+-- 条目之外要预留的行数：分组标题占位 + 热键提示 + 署名 + 声明 + 临时消息 + 边距。
+-- 面板高度和「按窗口高反推字号」都用它，改了要一起对上，否则底部会被裁掉。
+local EXTRA_LINES = 7
 
 local function draw_menu()
   if not S.menu_open then return end
@@ -1327,11 +1334,11 @@ local function draw_menu()
     pcall(function() avail = love.graphics.getHeight() end)
     if avail and avail > 0 then
       local maxh = avail - (MENU_Y - 10) - 10
-      local fit = math.floor((maxh - 28) / (#items + 5))
+      local fit = math.floor((maxh - 28) / (#items + EXTRA_LINES))
       if fit < line_h then line_h = math.max(fit, 9) end
     end
     local header_h = line_h * 2 + 10
-    local h = line_h * (#items + 5) + 28
+    local h = line_h * (#items + EXTRA_LINES) + 28
 
     -- 行高被压得比字还矮时换小字号（否则文字行行叠在一起）；整块面板用同一个字号。
     local row_font = font_for_height(line_h)
@@ -1406,11 +1413,23 @@ local function draw_menu()
       end
     end
 
+    local by = y0 + #items * line_h + 2
     love.graphics.setColor(160, 160, 160, 255)
-    love.graphics.print(T.hint, MENU_X, y0 + #items * line_h + 2)
+    love.graphics.print(T.hint, MENU_X, by)
+    -- 署名与声明常驻底部；临时消息排它们下面，出现时不会顶动上面几行。
+    -- ⚠️ 先判类型：文案缺失时 print(nil) 会抛错，被外层 pcall 一吞就是「底部整块不画」
+    -- —— 和标签缺失让整个面板消失是同一类坑（见 labelless_items 那条断言）。
+    if type(T.credit) == "string" then
+      love.graphics.setColor(210, 190, 110, 255)
+      love.graphics.print(T.credit, MENU_X, by + line_h)
+    end
+    if type(T.warn) == "string" then
+      love.graphics.setColor(255, 150, 150, 255)
+      love.graphics.print(T.warn, MENU_X, by + line_h * 2)
+    end
     if S.msg ~= "" and os.time() - S.msg_ts < 6 then
       love.graphics.setColor(140, 255, 140, 255)
-      love.graphics.print(S.msg, MENU_X, y0 + #items * line_h + 2 + line_h)
+      love.graphics.print(S.msg, MENU_X, by + line_h * 3)
     end
 
     love.graphics.setColor(255, 255, 255, 255)

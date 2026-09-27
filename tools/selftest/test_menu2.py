@@ -611,6 +611,20 @@ def check_slim_payload():
     check(release_flags(src) == src, "release_flags() 对精简版是 no-op（不该再改任何东西）")
 
 
+def check_footer_text():
+    """署名与声明：cn / en 两边都要有且非空。
+
+    运行时测不到 —— 测试台没有 CJK 字体，只会走 en 那一支；而且文案缺失时 draw_menu
+    里的类型守卫会静默跳过、不报错。所以只能查源码。
+    """
+    src = io.open(os.path.join(ROOT, "src", "_kr6trainer.lua"), encoding="utf-8").read()
+    for key in ("credit", "warn"):
+        hits = [ln.split("=", 1)[1].strip().rstrip(",").strip('"')
+                for ln in src.splitlines() if ln.strip().startswith(key + " = ")]
+        check(len(hits) == 2 and all(h for h in hits),
+              "MENU_TEXT 的 cn / en 都有非空的 " + key, "hits=%d" % len(hits))
+
+
 def main():
     if not os.path.isfile(os.path.join(RT, "love.exe")):
         print("运行时缺失，先裁一个...")
@@ -900,6 +914,7 @@ def main():
 
     # 源码层面的硬约束（没有 DEV 开关、没有诊断、release_flags 已是 no-op）
     check_slim_payload()
+    check_footer_text()
 
     print()
     if FAILURES:
