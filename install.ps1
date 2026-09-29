@@ -1,13 +1,9 @@
 ﻿# kr6-trainer 安装脚本
 #
-# 请把整个文件夹解压到**游戏根目录**（和 Kingdom Rush Genesis.exe 放在一起），
-# 然后双击 install.bat。
-#
-# 本脚本做什么：从游戏自己的 exe 里取出它自己的 all/director.lua，
-# 连同安装包里的两个文件一起写进游戏的存档目录。
+# 从游戏自己的 exe 里取出它自己的 all/director.lua，连同包里的两个文件一起写进游戏的存档目录。
 # **不修改游戏目录里的任何文件。**
 #
-# 想先看会做什么而不写文件：install.bat -DryRun
+# 先看会做什么（不写文件）：install.bat -DryRun
 # 手动指定位置：install.bat -GameDir "游戏目录" -SaveDir "存档目录"
 
 param(
@@ -38,9 +34,8 @@ function Read-Fully($stream, [byte[]]$buffer, [int]$count) {
     return $got
 }
 
-# 游戏 exe = love.exe 的字节 + 追加在后面的 .love zip。
-# 用中央目录结束记录（EOCD）定位 zip；中央目录里的偏移是相对 .love 起始的，
-# 所以要整体加上 love.exe 那一段的长度（$delta）。
+# 游戏 exe = love.exe 的字节 + 追加在后面的 .love zip。用 EOCD 定位；
+# 中央目录里的偏移相对 .love 起始，要整体加上 love.exe 那段的长度（$delta）。
 function Get-ZipEntry([string]$exe, [string]$wanted) {
     $fs = [IO.File]::Open($exe, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
     try {
@@ -134,9 +129,8 @@ if (-not $game) {
     }
 }
 if (-not $game) {
-    # 猜路径兜底。⚠️ 刻意**不做** Steam 库发现：那组特征（读 Steam 的注册表键、
-    # 再解析它的库配置文件）与 Steam 盗号木马逐字重合，会被杀软启发式误报 ——
-    # 实测与理由见 docs/HANDOFF.md，别按那条记录加回来。猜不中时由 -GameDir 兜底。
+    # 猜路径兜底。⚠️ 刻意**不做** Steam 库发现（读注册表键 + 解析库配置文件）：那组特征与
+    # Steam 盗号木马逐字重合，会被杀软启发式误报（理由见 docs/HANDOFF.md，别加回来）。
     $cands = @(
         'C:\Program Files (x86)\Steam\steamapps\common\' + $GameName,
         'C:\Program Files\Steam\steamapps\common\' + $GameName,
@@ -158,7 +152,7 @@ $exe = $game.TrimEnd('\') + '\' + $ExeName
 if (-not (Test-Path $exe)) { Fail "$ExeName 不在 $game 里" }
 
 # ⚠️ 判空必须在**拼路径之前**：Join-Path 对空值是抛异常，不是返回空。
-# 顺序写反的话，下面那句有用的提示永远轮不到，玩家只会看到一段天书。
+# 顺序写反的话，下面那句提示永远轮不到。
 if (-not $SaveDir -and -not $env:APPDATA) {
     Fail '环境变量 APPDATA 不存在，请用 -SaveDir 指定目录'
 }
@@ -203,12 +197,10 @@ if ($DryRun) { Say "`n（-DryRun：什么都没写）"; exit 0 }
 
 foreach ($item in $plan) { Write-File $item.path $item.bytes }
 
-# 游戏**正在跑**的时候装：文件能写进去，但那个进程在启动时就已经把旧版本读进内存了，
-# 不会重新读 —— 玩家会看到「装了但什么都没发生」。这个坑真的踩过（自己也踩过），
-# 所以这里明确说一句，而不是让玩家去猜。
-#
-# ⚠️ 刻意**不**去探测游戏进程在不在跑：发行包里出现进程枚举会被杀软启发式盯上
-# （理由见 docs/HANDOFF.md）。改成无条件提醒，玩家看到的信息一字不少。
+# 游戏**正在跑**时装：文件写得进去，但那个进程启动时就把旧版本读进内存了、不会重读 ——
+# 玩家会看到「装了但什么都没发生」。
+# ⚠️ 刻意**不**探测进程：发行包里出现进程枚举会被杀软启发式盯上（见 docs/HANDOFF.md），
+# 改成无条件提醒。
 Say ''
 Say '安装完成。'
 Say ''

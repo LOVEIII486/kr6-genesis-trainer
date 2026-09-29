@@ -1,7 +1,6 @@
 ﻿# kr6-trainer 卸载脚本
 #
-# 双击 uninstall.bat 即可。只删本模组自己写进存档目录的文件，
-# **不碰游戏自己的存档**，也**不动游戏目录里的任何文件**。
+# 只删本模组写进存档目录的文件，**不碰游戏自己的存档**，也不动游戏目录里的任何文件。
 # 存档备份（_kr6_slot_backup_*.lua）会保留。
 #
 # 想先看会删什么：uninstall.bat -DryRun
@@ -64,9 +63,8 @@ foreach ($v in $victims) { Remove-Item -Recurse -Force $v }
 $allDir = Join-Path $save 'all'
 if ((Test-Path $allDir) -and -not (Get-ChildItem $allDir -Force)) { Remove-Item $allDir -Force }
 
-# 同上：游戏开着的时候删，已经跑着的进程里那份模组还在，得重启才彻底干净。
-# ⚠️ 刻意**不**去探测游戏进程在不在跑：发行包里出现进程枚举会被杀软启发式盯上
-# （理由见 docs/HANDOFF.md）。改成无条件提醒。
+# 同 install.ps1：游戏开着时删，跑着的进程里那份模组还在，得重启才干净。
+# 刻意不探测进程（会被杀软启发式盯上），改为无条件提醒。
 Say ''
 Say '卸载完成，游戏回到原状。存档没被碰过。'
 Say ''

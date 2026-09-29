@@ -1,18 +1,8 @@
--- kr6 游戏内修改器（精简版）
+-- kr6 游戏内修改器。
 --
--- 由覆盖桩 all/director.lua 加载：桩先从 _orig/ 读回游戏自己的原始字节码，再把模块表
--- 交到这里。本文件所有代码都在 pcall 保护下，坏不了游戏。
--- 功能全开的开发版冻结在 src/_kr6trainer_lab.lua。
+-- 装载：覆盖桩 all/director.lua 先从 _orig/ 读回游戏自己的字节码，再把模块表交到这里。
+-- 本文件全部代码包在 pcall 里。
 --
--- 提供：关卡内 金币 / 生命 / 无限金钱 / 生命锁定 / 立刻下一波；
---   敌人属性 血量/移速倍率（只在本关生效）；
---   英雄 当场升级；
---   存档 星星拉满 / 升级树补全（回主菜单重新加载存档后生效）。
---
--- 不碰防御塔（未验证有效，已从正式代码撤掉）。
---
--- 热键：Home 或 Tab 开关菜单（有些键盘没有 Home 键）。没有命令文件、没有心跳：
--- 只写三种文件，全是"发生了才写"——本次启动的钩子清单、出错记录、改存档前的自动备份。
 local virt, mod = ...
 
 local SEP = string.char(92)
@@ -65,8 +55,8 @@ end
 if type(S.nocd) ~= "table" then
   S.nocd = { power = false, hero = false, tower = false }
 end
--- 被清掉的原值。**必须记**：清的是"冷却时长"这类字段，游戏不会自己把时长重写回去，
--- 不记的话关掉开关也恢复不了（玩家实测：英雄无 CD 关了还在连放）。弱键，对象回收即释放。
+-- 被清掉的原值。**必须记**：清的是"冷却时长"，游戏不会自己写回去，不记就恢复不了。
+-- 弱键，对象回收即释放。
 if type(S.nocd_base) ~= "table" then
   S.nocd_base = setmetatable({}, { __mode = "k" })
 end
@@ -74,14 +64,32 @@ end
 if type(S.gold) ~= "table" then S.gold = { mult = 1 } end
 if type(S.gold.mult) ~= "number" then S.gold.mult = 1 end
 if type(S.gold_base) ~= "table" then S.gold_base = {} end
--- 防御塔的射程 / 攻速倍率，以及「每座塔已经乘上去的倍率」。
+-- 防御塔的四项倍率（射程 / 攻速 / 伤害 / 技能CD），以及「每座塔已经乘上去的倍率」。
 -- 弱键：塔被拆或升级后表被回收，记录跟着释放，不会越攒越多。
-if type(S.tower) ~= "table" then S.tower = { range = 1, rate = 1 } end
+if type(S.tower) ~= "table" then S.tower = { range = 1, rate = 1, damage = 1, cd = 1 } end
 if type(S.tower.range) ~= "number" then S.tower.range = 1 end
 if type(S.tower.rate) ~= "number" then S.tower.rate = 1 end
+if type(S.tower.damage) ~= "number" then S.tower.damage = 1 end
+if type(S.tower.cd) ~= "number" then S.tower.cd = 1 end
 if type(S.tower_seen) ~= "table" then
   S.tower_seen = setmetatable({}, { __mode = "k" })
 end
+-- 英雄的四项倍率（血量 / 伤害 / 攻速 / 技能CD）。**单开一张表，不复用 S.mult** ——
+-- mult_apply_live 与换关复位都写死了 enemy_hp / enemy_speed 两个键，塞进去会被当成没变化。
+if type(S.hero) ~= "table" then S.hero = { hp = 1, damage = 1, rate = 1, cd = 1 } end
+if type(S.hero.hp) ~= "number" then S.hero.hp = 1 end
+if type(S.hero.damage) ~= "number" then S.hero.damage = 1 end
+if type(S.hero.rate) ~= "number" then S.hero.rate = 1 end
+if type(S.hero.cd) ~= "number" then S.hero.cd = 1 end
+-- 每一项各记「已经乘上去的倍率」。一律弱键，实体被游戏回收后跟着释放。
+if type(S.hero_seen) ~= "table" then S.hero_seen = setmetatable({}, { __mode = "k" }) end
+if type(S.tower_cd_seen) ~= "table" then S.tower_cd_seen = setmetatable({}, { __mode = "k" }) end
+if type(S.hero_bullet_seen) ~= "table" then S.hero_bullet_seen = setmetatable({}, { __mode = "k" }) end
+-- 动画 sprite 被我们改过的 fps **原值**。还原时必须写回原值、不能写 nil —— 模板里有
+-- 非 nil 的 fps（templates_game.lua 两处），写 nil 会改掉那两处的游戏行为。
+if type(S.anim_base) ~= "table" then S.anim_base = setmetatable({}, { __mode = "k" }) end
+-- 每个模板的攻击动画名集合（按模板名缓存：动画名来自模板，不随实体变，也不会过期）
+if type(S.anim_groups) ~= "table" then S.anim_groups = {} end
 -- 存档钩子的登记表与待应用的存档操作队列
 if type(S.slot_hooks) ~= "table" then S.slot_hooks = {} end
 if type(S.slot_ops) ~= "table" then S.slot_ops = {} end
@@ -196,6 +204,57 @@ local game_mod, scale_table, mult_apply, mult_apply_live, queue_slot_op
 local na, hero_thresholds, power_thresholds, hero_raise
 local nocd_restore
 local gold_factor_tbl, gold_pop, install_gold_hook
+local anim_apply, install_anim_hook, hero_bullet_apply, unlock_achievements
+
+-- 新增七项可调倍率的只读查询表（给 action 用）。⚠️ 存的是**引用**（set 指向 S 上的表），
+-- 值在调用那一刻才读 —— 存值会永远停在初始的 x1。
+-- 可调行本身没有"执行"语义，但每个菜单项都必须能用空参调用一次（冒烟测试会跑遍全菜单）。
+local MULT_NEW_ROWS = {
+  { "tower_damage",   S.tower, "damage", "塔伤害",     "tower damage" },
+  { "tower_atkspd",   S.tower, "rate",   "塔攻速",     "tower attack speed" },
+  { "tower_skill_cd", S.tower, "cd",     "塔技能CD",   "tower skill cd" },
+  { "hero_hp",        S.hero,  "hp",     "英雄血量",   "hero HP" },
+  { "hero_damage",    S.hero,  "damage", "英雄伤害",   "hero damage" },
+  { "hero_atkspd",    S.hero,  "rate",   "英雄攻速",   "hero attack speed" },
+  { "hero_skill_cd",  S.hero,  "cd",     "英雄技能CD", "hero skill cd" },
+}
+local MULT_NEW_BY_ID = {}
+for i = 1, #MULT_NEW_ROWS do MULT_NEW_BY_ID[MULT_NEW_ROWS[i][1]] = MULT_NEW_ROWS[i] end
+
+-- 倍率行的**档位表**（←→ 与滑条都从这里取值）。值只能取自表里，所以往下再往上必然精确
+-- 回到原值 —— 加法步长 + 下限夹取会漂（x1 往下停在 0.1，再往上永远回不到 1.0）。
+-- ⚠️ 必须写**精确字面量**：算式（1 + 0.5）会攒出 0.30000000000000004，下面的相等判断匹配不上。
+local MULT_STEPS = {
+  0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1,
+  1.5, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+}
+
+-- 本行可用的档位下标区间（表是升序的，过滤掉范围外的之后仍是一段连续区间）
+local function ladder_range(lo, hi)
+  local i0, i1 = 1, #MULT_STEPS
+  if lo then while i0 <= #MULT_STEPS and MULT_STEPS[i0] < lo do i0 = i0 + 1 end end
+  if hi then while i1 >= 1 and MULT_STEPS[i1] > hi do i1 = i1 - 1 end end
+  return i0, i1
+end
+
+-- cur 落在 [i0,i1] 里的第几档（不在表上就取最近的一档；相等时取靠下的那个）。
+local function ladder_nearest(cur, i0, i1)
+  local idx, bestd = i0, nil
+  for j = i0, i1 do
+    local d = math.abs(MULT_STEPS[j] - cur)
+    if bestd == nil or d < bestd then bestd, idx = d, j end
+  end
+  return idx
+end
+
+-- 在档位表里移动 d 格。cur 不在表上时（旧版本注入留下的值）先吸附到最近的一档。
+local function ladder_move(cur, d, lo, hi)
+  local i0, i1 = ladder_range(lo, hi)
+  if i1 < i0 then return cur end
+  local i = ladder_nearest(cur, i0, i1) + (d or 0)
+  if i < i0 then i = i0 elseif i > i1 then i = i1 end
+  return MULT_STEPS[i]
+end
 
 local function action(id, arg)
   if id == "gold_set" then
@@ -242,12 +301,10 @@ local function action(id, arg)
       return queue_slot_op(o, arg.cn or o.op, arg.en or o.op)
     end
     if type(arg.set) == "table" and arg.key ~= nil then
+      -- 倍率行走**档位表**：arg.delta 是档位序号的增量（±1，见 menu_key），不是数值增量。
+      -- 值只能取自表里，所以不会像加法步长那样漂（往下再往上回不到 1.0）。
       local cur = tonumber(arg.set[arg.key]) or 1
-      local v = cur + arg.delta
-      if arg.min and v < arg.min then v = arg.min end
-      if arg.max and v > arg.max then v = arg.max end
-      -- 只留两位小数：浮点反复加减会攒出 1.0000000000000002，而它原样印在行尾。
-      v = math.floor(v * 100 + 0.5) / 100
+      local v = ladder_move(cur, arg.delta, arg.min, arg.max)
       if v == cur then
         return "OK: " .. tostring(arg.key) .. " at limit x" .. tostring(v)
       end
@@ -279,14 +336,20 @@ local function action(id, arg)
     if v then
       S.nocd_report, S.nocd_since = true, os.time()
     else
-      -- 关掉就**把原值写回去**：清的是"冷却时长"，游戏不会自己重写，不还原就会出现
-      -- "关了还在连放"（玩家实测）。还开着的那些下一帧会重新清。
+      -- 关掉就**把原值写回去**：清的是"冷却时长"，游戏不会自己重写，不还原就会"关了还在连放"。
       nocd_restore()
     end
     local cn = ({ power = "法术", hero = "英雄技能", tower = "塔技能" })[key] or key
     local r = cn .. "无CD: " .. (v and "开" or "关")
     note(r, key .. " no cooldown: " .. (v and "on" or "off"))
     return r
+  elseif id == "ach_unlock" then
+    local msg, why = unlock_achievements()
+    if not msg then
+      local r = na(why)
+      note(r) return r
+    end
+    note(msg) return msg
   elseif id == "hero_now_up" or id == "hero_now_max" then
     -- 关卡内即时升级。失败时用 na()（**不含 "FAIL"**，冒烟测试把含 FAIL 的回复算失败）。
     local msg, why = hero_raise(id == "hero_now_max" and "max" or "next")
@@ -309,6 +372,13 @@ local function action(id, arg)
     local r = "塔射程 x" .. tostring(v) .. "（←→ 调整）"
     note(r, "tower range = x" .. tostring(v))
     return "tower_range = x" .. tostring(v)
+  elseif MULT_NEW_BY_ID[id] then
+    -- 和 enemy_hp / tower_range 同款：只读查询，调整走 ←→，误触 Enter 不该改数值。
+    local row = MULT_NEW_BY_ID[id]
+    local v = row[2][row[3]]
+    local r = row[4] .. " x" .. tostring(v) .. "（←→ 调整）"
+    note(r, id .. " = x" .. tostring(v))
+    return id .. " = x" .. tostring(v)
   elseif id == "close" then
     S.menu_open = false
     return "closed"
@@ -348,17 +418,10 @@ na = function(what)
   return "n/a: " .. tostring(what)
 end
 
--- 击杀金币倍率。**只放大击杀，不放大漏怪**；倍率 1 时完全不动游戏。
---
--- 击杀与漏怪共用同一个倍率表达式，但各自在函数开头读一次，落在两个不同的系统里：
---   all/systems.lua:1985  sys.health:on_update      ← 击杀
---   all/systems.lua:2404  sys.goal_line:on_update   ← 漏怪也给钱，且不发 got-enemy-gold
--- 所以把「表 × 倍率」限制在 sys.health:on_update 这一趟里就够了，漏怪那趟读到的还是原值。
--- 调度器每条 tick 现查 `sys:on_update`（lib/klove/simulation.lua:127），包住表上的函数即生效。
---
--- 为什么不改 enemy.gold / balance：那是数值来源，扣钱与退款路径不读倍率表，改表零误伤。
--- 为什么不用 hand_of_midas_factor：那个每击杀一次就播一遍金币飞行动画和音效。
--- ⚠️ 所有模式的值都 ≥0（HEROIC/ENDLESS 那两格是 0），所以倍率不会把它乘成负数。
+-- 击杀金币倍率。击杀与漏怪共用同一张倍率表，但各自在函数开头读一次、落在两个系统里
+-- （sys.health:on_update ← 击杀 / sys.goal_line:on_update ← 漏怪），所以只在击杀那一趟
+-- 临时改表就够，漏怪读到的还是原值。倍率 1 时完全不动游戏。
+-- ⚠️ 别改成 enemy.gold（数值来源，退款路径不读倍率表）或 hand_of_midas_factor（会重播金币动画）。
 local GOLD_FACTOR_TBL = "gold_enemy_factor_per_mode"
 
 gold_factor_tbl = function()
@@ -411,12 +474,9 @@ install_gold_hook = function()
   return true
 end
 
--- 敌人字段的真实路径（源码：kr6/templates_game.lua 里 tt.health.hp_max = b.hp、
--- tt.motion.max_speed = b.speed）—— **都在子表里**，不在模板/实体顶层：
---   模板   t.health.hp_max / t.motion.max_speed
---   活实体 e.health.hp_max / e.motion.max_speed
--- ⚠️ 这几项参与每帧重放，**绝不能碰当前血量**（每帧写回 = 打不死）。
--- motion.speed 是**向量**不是数字（all/components.lua），类型检查会跳过，列着无害。
+-- 敌人字段的真实路径 —— **都在子表里**，不在模板/实体顶层：
+--   模板 t.health.hp_max / t.motion.max_speed；活实体 e.health.hp_max / e.motion.max_speed
+-- ⚠️ 这几项每帧重放，**绝不能碰当前血量**（每帧写回 = 打不死）。
 local ENEMY_HP_FIELDS    = { hp_max = true }
 local ENEMY_SPEED_FIELDS = { max_speed = true, speed_limit = true, speed = true }
 
@@ -440,14 +500,11 @@ scale_table = function(t, fields, mult)
   return n
 end
 
--- 数组字段的版本：**已删**。它只服务 balance 那条路径，而那条路径必须去掉（见 mult_apply）——
--- 模板上的 hp_max 在关卡初始化时会被 difficulty:patch_templates 从数组**就地换成数字**，
--- 若先缩了数组元素、再缩换出来的数字，就变成平方。
+-- ⚠️ 别在这加"缩数组字段"的版本：模板上的 hp_max 在关卡初始化时会被 difficulty:patch_templates
+-- 从数组**就地换成数字**，先缩数组再缩换出来的数字就是平方。
 
--- 遍历 entity_db 里的模板，每个调一次 fn。
--- 注册表就是 `entity_db.entities`（all/entity_db.lua 的 load() 里建、register_t 里写）。
--- 不用 filter_templates()：它每次都 `self:filter(self.entities)` **新建一张全模板表**（2054 项）。
--- 返回**访问到的模板个数**（不是 fn 返回值之和 —— 回调可能恒返回 0）。
+-- 遍历 entity_db 里的模板，每个调一次 fn，返回**访问到的个数**（不是 fn 返回值之和）。
+-- 不用 filter_templates()：它每次都新建一张全模板表（2054 项）。
 local function each_template(edb, fn)
   if type(edb) ~= "table" then return 0 end
   local reg = rawget(edb, "entities")
@@ -470,12 +527,8 @@ local function each_template(edb, fn)
   return seen
 end
 
--- 每帧重放所有倍率。**只写模板，绝不写 balance。**
---
--- 敌人是从模板深拷贝出来的（all/entity_db.lua 的 create_entity 里 `copy(tpl)`），所以改模板
--- 就能影响之后生成的每一个。而模板自己在**每关开头**由 `sys.level:init` 里的 `E:load()`
--- 从 balance 重建 —— 若两边都写，下一关的模板拿到的就是已经乘过一次的 balance，直接变平方。
--- 只写模板还有个好处：关内改倍率**立刻**对新出场的敌人生效（写 balance 得等下一关）。
+-- 每帧重放所有倍率。**只写模板，绝不写 balance** —— 模板每关开头从 balance 重建，
+-- 两边都写下一关就变平方。只写模板还让关内的改动立刻对新出场的敌人生效。
 mult_apply = function()
   local m = S.mult
   local hp, sp = m.enemy_hp, m.enemy_speed
@@ -507,13 +560,10 @@ local function each_entity(s, fn)
   return n
 end
 
--- 技能无CD。**冷却不在 store 的直接字段上**（v7 猜错了，实机三类全 0；探针读到真实结构后重写）：
---   法术：控制对象是 store.entities 里 template_name = "power_<id>_control" 的实体，cooldown 是它的直接字段
---   英雄：技能在英雄实体（store.hero_team）的 timed_attacks 容器里（以及 hero.skills）
---   塔　：tower_<名>_lvl<N> 实体上的 attacks / timed_attacks 容器
--- 所以三类都是"找到实体 → 走进技能容器 → 把里面的计时字段清零"。
--- ⚠️ 禁区：塔/英雄的基础攻击节奏由 attacks 里的 attack_cd 等决定，但那些**不在**容器里 ——
--- 我们只动容器内部，天然不碰它。
+-- 技能无CD。**冷却不在 store 的直接字段上**，三类各有各的位置（探针实测）：
+--   法术 power_<id>_control 实体的直接字段；英雄 hero 实体（带 .hero 的）的 timed_attacks / hero.skills；
+--   塔　 tower_<名>_lvl<N> 实体的 attacks / timed_attacks。
+-- 三类都是「找到实体 → 进技能容器 → 把计时字段清零」，基础攻击不在容器里（见下面 clear_entity_cds）。
 local CD_FIELDS = {
   cd = true, ["_cd"] = true, cooldown = true, ts = true, ["_ts"] = true,
   next = true, next_ts = true, timer = true, time_left = true,
@@ -521,9 +571,9 @@ local CD_FIELDS = {
 }
 local CD_CONTAINERS = { "attacks", "timed_attacks", "skills", "main_script" }
 
--- 走进容器把计时字段清零。seen = **看到几个候选字段（不管值是多少）** —— v7 那个自检只数
--- "值 > 0" 的，技能正好不在冷却时报 0，分不出"没有这种字段"和"字段恰好在 0"，害我白跑一趟。
--- 记下原值再一次写掉；同一个字段只记第一次（那次才是游戏自己的值）。
+-- 走进容器把计时字段清零。seen 数的是**看到几个候选字段（不管值是多少）** —— 只数
+-- "值 > 0" 的会分不出「没有这种字段」和「字段恰好在 0」。
+-- 记下原值再写掉；同一个字段只记第一次（那次才是游戏自己的值）。
 local function cd_set(obj, k, v)
   local box = S.nocd_base[obj]
   if not box then box = {} S.nocd_base[obj] = box end
@@ -546,7 +596,28 @@ nocd_restore = function()
   return n
 end
 
-local function clear_container(node, acc, depth)
+-- 基础攻击的判据 —— 引擎自己就用这个标记（模板给普攻打 basic_attack = true，
+-- 游戏自己的 reset_cooldowns_of_attacks 也只看它）。
+-- ⚠️ 必须**整张 list 一起看**：炮塔的真普攻可能在 list[2]，营寨的 list[1] 反而是技能。
+-- 规则：list 里有一条打了标记就只认标记；一条都没有才按位置兜底成第 1 条。
+-- 返回 (条目数, 带标记的条目数)，调用方用 marked > 0 决定走哪条路。
+local function list_marks(list)
+  local n, marked = 0, 0
+  for _, at in pairs(list) do
+    if type(at) == "table" then
+      n = n + 1
+      if rawget(at, "basic_attack") ~= nil then marked = marked + 1 end
+    end
+  end
+  return n, marked
+end
+
+local function is_basic_atk(at, i, any_marked)
+  if any_marked then return rawget(at, "basic_attack") == true end
+  return i == 1
+end
+
+local function clear_container(node, acc, depth, skip)
   if type(node) ~= "table" or depth > 2 then return end
   for k, v in pairs(node) do
     if type(v) == "number" then
@@ -555,14 +626,12 @@ local function clear_container(node, acc, depth)
         if v ~= 0 then cd_set(node, k, 0) acc.cleared = acc.cleared + 1 end
       end
     elseif type(v) == "table" then
-      clear_container(v, acc, depth + 1)
+      if not (skip and skip[v]) then clear_container(v, acc, depth + 1, skip) end
     end
   end
 end
 
--- 实体的技能容器（英雄还有一层 hero.*）
--- 实体的技能容器。**英雄的库存在 .hero，防御塔的库存在 .tower**（探针实测：建成的塔实体
--- 是 tower_forger_lvl4，容器挂在它的 tower 子表上；实体自己那层没有容器）。
+-- 实体的技能容器：英雄的在 .hero、防御塔的在 .tower（实体自己那层没有）。
 local function clear_entity_cds(e, acc)
   local nodes = { e }
   for i = 1, 2 do
@@ -571,8 +640,25 @@ local function clear_entity_cds(e, acc)
   end
   for i = 1, #nodes do
     for j = 1, #CD_CONTAINERS do
-      local c = rawget(nodes[i], CD_CONTAINERS[j])
-      if type(c) == "table" then clear_container(c, acc, 0) end
+      local name = CD_CONTAINERS[j]
+      local c = rawget(nodes[i], name)
+      if type(c) == "table" then
+        local skip
+        if name == "attacks" then
+          -- ⚠️ **跳过基础攻击**：塔的普攻节奏归「塔攻速」那一项管。
+          -- 旧版把 attacks 整片清（含 `list[1].cooldown`），把普攻节奏也清零了 ——
+          -- 和上面那句"只动容器内部、天然不碰基础攻击"的注释正好相反。
+          local list = rawget(c, "list")
+          if type(list) == "table" then
+            local _, marked = list_marks(list)
+            skip = {}
+            for k, at in pairs(list) do
+              if type(at) == "table" and is_basic_atk(at, k, marked > 0) then skip[at] = true end
+            end
+          end
+        end
+        clear_container(c, acc, 0, skip)
+      end
     end
   end
 end
@@ -582,17 +668,34 @@ local function tpl_name(e)
   return (type(nm) == "string") and nm or ""
 end
 
--- 法术：控制对象**不是关卡里的实体**（探针实测：实体列表里没有 power_*，它只在施放那一刻
--- 才 create_entity 出来）。真正的判据在**控制模板**上的三个函数 —— can_fire_fn（能不能放）/
--- get_cooldown / power_cooldown_fn（名字来自 templates_game.lua 里 power_<id>_control 一带）。
--- 做法：把名字里带 "power" 的模板里这三个函数换成"永远就绪"；原件存起来，关掉开关还原。
+-- 塔 / 英雄的判据。
+-- 英雄扫 store.entities、不看 store.hero_team：剧情英雄（alleria / blackburn / denas）
+-- 走 LU.insert_hero，那条路**不写** hero_team（只有 insert_hero_kr5 才写），
+-- 只看 hero_team 会静静漏掉它们。
+local function is_tower(e)
+  local nm = tpl_name(e)
+  if nm:sub(1, 6) ~= "tower_" or nm:find("holder", 1, true) then return false end
+  -- ⚠️ 光看名字前缀不够：`tower_stage_*` 也是 tower_ 开头，但那是**敌人/机关的塔**
+  -- （8 关打玩家单位的守方弩炮、16 关的树人、13 关的日光塔）。调「塔攻速/伤害」会把
+  -- 它们一起调 —— 玩家等于在给敌人上 buff。游戏自己的判据是 `tower.can_be_mod`
+  -- （组件默认 true，这类模板显式置 false：kr6/templates_game.lua:12015/12054/12449…）。
+  local t = rawget(e, "tower")
+  if type(t) == "table" then
+    if rawget(t, "can_be_mod") == false then return false end
+    local ty = rawget(t, "type")
+    if ty == "holder" or ty == "build_animation" then return false end
+  end
+  return true
+end
 
+local function is_hero(e)
+  return type(rawget(e, "hero")) == "table"
+end
 
-
--- 法术：冷却**时长**在每个法术按钮自己身上 ——
---   game_gui._ingame_fit_width_y0.powers_view.view.children[i].cooldown_time
--- 施放那一刻它从 2 跳到 20（秒）。按钮上的 tm.phase 是它**算出来的进度**、每帧重算，所以写
--- phase 没用（表现成进度条闪一下），要清的是时长本身。tm 里那份按英雄/塔同一套规则一起清。
+-- 法术冷却：冷却**时长**在每个法术按钮自己身上 ——
+--   game_gui._ingame_fit_width_y0.powers_view.view.children[i].cooldown_time（施放时从 2 跳到 20 秒）
+-- ⚠️ 按钮上的 tm.phase 是每帧重算的进度，写它没用（进度条闪一下），要清的是时长本身。
+-- tm 里那份按英雄 / 塔同一套规则一起清。
 local POWER_CD_FIELDS = { "cooldown_time", "cooldown", "cooldown_max", "cooldown_min" }
 
 local function clear_button_list(kids, acc)
@@ -632,20 +735,14 @@ local function apply_nocd()
   local s = store_of()
   if not s then return by end
   if S.nocd.hero then
-    local team = rawget(s, "hero_team")
-    if type(team) == "table" then
-      for _, e in pairs(team) do
-        if type(e) == "table" then clear_entity_cds(e, by.hero) end
-      end
-    end
+    each_entity(s, function(e)
+      if is_hero(e) then clear_entity_cds(e, by.hero) end
+      return 0
+    end)
   end
   if S.nocd.tower then
     each_entity(s, function(e)
-      local nm = tpl_name(e)
-      -- tower_holder_* 是**空建造位**（探针实测：没有技能数据），跳过省事
-      if nm:sub(1, 6) == "tower_" and not nm:find("holder", 1, true) then
-        clear_entity_cds(e, by.tower)
-      end
+      if is_tower(e) then clear_entity_cds(e, by.tower) end
       return 0
     end)
   end
@@ -721,41 +818,48 @@ end
 
 
 
--- 防御塔的射程 / 攻速。
---
--- ⚠️ 目前**只有射程摆上了菜单**，攻速没有（S.tower.rate 恒为 1）。原因见 menu_items 里
--- 「防御塔」那一组的注释：攻速受射击动画时长限制，调快很快就不起作用。
--- 这一半代码保留是因为它是对的、也有测试钉着，将来要放开只需加一行菜单项。
---
--- 两个字段都在**活塔实体的 attacks 上**，而且选敌那一刻现读
--- （源码：kr6/scripts_game.lua 各塔的 update 里 `local a = this.attacks` → `a.range`）：
---     a.range                 ← tt.attacks.range   = b.basic_attack.range[级]
---     a.list[i].cooldown      ← tt.attacks.list[1].cooldown
--- ⚠️ **不是** balance.towers.<名>.stats.{range,cooldown} —— 那个只喂 UI 数字
--- （tt.info.stat_range），老版本就是缩它，所以改完只有面板变、实际打不到更远。
---
--- 用**相对缩放**、不记基线：游戏的 range_factor 升级修饰器是乘法 buff
--- （insert 时乘、remove 时除，kr6/scripts_game.lua:25933 一带）。记基线会把 buff
--- 生效期间的值错记成基线，buff 结束后射程永久虚高。记「已经乘上去的倍率」就没这问题，
--- 而且塔升级会重建实体 → 新表没记录 → 按完整倍率乘一次，天然覆盖升级。
-local TOWER_ONE = { range = 1, rate = 1 }
+-- 防御塔的四项倍率：射程 / 攻速 / 伤害 / 技能CD。字段都在**活塔实体**上、选敌那一刻现读：
+--   a.range / a.list[i].cooldown / a.list[i].shoot_time / e.tower.damage_factor
+-- ⚠️ **不是** balance.towers.<名>.stats.*：那个只喂 UI 数字，改了只有面板变。
+-- ⚠️ 伤害也**不是**改子弹模板：法师 brilliance 会在建 / 拆塔时从 _orig_* 重算整片模板。
+-- 攻速受**射击动画时长**卡着（周期 = max(cooldown, 动画时长)），必须三层一起改：
+-- 冷却 + 动画 fps + shoot_time（前摇是绝对秒数，x2 以上立刻撞上；②③ 同系数缩才对得上）。
+-- 一律**相对缩放、不记基线** —— 游戏的 range_factor 是乘法 buff，记基线会把 buff 期间的值
+-- 错记成基线；记「已乘上去的倍率」还能天然覆盖塔升级重建实体。
+local TOWER_ONE = { range = 1, rate = 1, damage = 1 }
 
--- 把 from 的倍率换成 to 的（乘一次差值）。攻速是"越大越快"，落在冷却上要取倒数。
-local function tower_rescale(a, from, to)
-  if type(a.range) == "number" then
-    local f = to.range / from.range
-    if f ~= 1 then a.range = a.range * f end
-  end
-  local fc = from.rate / to.rate          -- 冷却该乘的倍数 = 攻速倍数的倒数
-  if fc ~= 1 then
-    local list = rawget(a, "list")
-    -- pairs 不用 #：容器形状没实证，稀疏表的 `#` 会返回 0（这仓库踩过）
-    if type(list) == "table" then
-      for _, at in pairs(list) do
-        if type(at) == "table" and type(at.cooldown) == "number" then
-          at.cooldown = at.cooldown * fc
+-- 把 from 的倍率换成 to 的（乘一次差值）。攻速是"越大越快"，落在冷却 / 前摇上要取倒数。
+local function tower_rescale(e, from, to)
+  local a = rawget(e, "attacks")
+  if type(a) == "table" then
+    if type(a.range) == "number" and to.range ~= from.range then
+      a.range = a.range * (to.range / from.range)
+    end
+    local fc = from.rate / to.rate          -- 冷却该乘的倍数 = 攻速倍数的倒数
+    if fc ~= 1 then
+      -- ⚠️ **容器级**的 attacks.cooldown 也要缩：炮塔 / 树人 / 炼金 / 三管炮这 4 座的门控读的是
+      -- 它、不是 list[1]。不缩这个，它们的周期就死卡在原冷却上，菜单调到 x10 也没用。
+      if type(a.cooldown) == "number" then a.cooldown = a.cooldown * fc end
+      local list = rawget(a, "list")
+      -- pairs 不用 #：容器形状没实证，稀疏表的 `#` 会返回 0
+      if type(list) == "table" then
+        local _, marked = list_marks(list)
+        for i, at in pairs(list) do
+          -- 只动**基础攻击**，技能那几条归「塔技能CD」管 —— 两边用的是同一套判据，
+          -- 正好互补，谁都碰不到对方那条（各判各的会让技能被缩两次、系数相消）。
+          if type(at) == "table" and is_basic_atk(at, i, marked > 0) then
+            if type(at.cooldown) == "number" then at.cooldown = at.cooldown * fc end
+            if type(at.shoot_time) == "number" then at.shoot_time = at.shoot_time * fc end
+          end
         end
       end
+    end
+  end
+  -- 伤害在 .tower 子表上（attacks 里没有这个字段）
+  if to.damage ~= from.damage then
+    local t = rawget(e, "tower")
+    if type(t) == "table" and type(t.damage_factor) == "number" then
+      t.damage_factor = t.damage_factor * (to.damage / from.damage)
     end
   end
 end
@@ -766,18 +870,18 @@ local function tower_apply()
   local want = S.tower
   local n = 0
   each_entity(s, function(e)
-    local nm = tpl_name(e)
-    -- tower_holder_* 是**空建造位**（没有 attacks），跳过
-    if nm:sub(1, 6) == "tower_" and not nm:find("holder", 1, true) then
-      local a = rawget(e, "attacks")
-      if type(a) == "table" then
-        local got = S.tower_seen[a]
-        -- 比**值**不比表：存的是副本，同一张表比较恒不相等，会每帧重乘
-        if not got or got.range ~= want.range or got.rate ~= want.rate then
-          tower_rescale(a, got or TOWER_ONE, want)
-          S.tower_seen[a] = { range = want.range, rate = want.rate }
-          n = n + 1
-        end
+    if is_tower(e) then
+      local got = S.tower_seen[e]
+      -- 逐字段兜底：S 跨次注入存活，旧版代码写下的记录可能没有 damage 这一格，
+      -- 直接比会把 nil 当"不同"，再拿它做 `1 / nil` 算术 → 整趟 each_entity 中断。
+      local g = { range = (got and got.range) or 1, rate = (got and got.rate) or 1,
+                  damage = (got and got.damage) or 1 }
+      -- 比**值**不比表：存的是副本，同一张表比较恒不相等，会每帧重乘
+      if not got or g.range ~= want.range or g.rate ~= want.rate
+         or g.damage ~= want.damage then
+        tower_rescale(e, g, want)
+        S.tower_seen[e] = { range = want.range, rate = want.rate, damage = want.damage }
+        n = n + 1
       end
     end
     return 0
@@ -785,10 +889,421 @@ local function tower_apply()
   return n
 end
 
--- 存档层：游戏内改进度（宝石/星星/解锁）
--- 存档不常驻内存（异步文件 IO），但**总得**经过「文本 → Lua 表」和「Lua 表 → 文本」两个
--- 转换，在那两个函数上钩一道即可。⚠️ 待办表 S.slot_ops 是**一次性**的：命中一次存档表就
--- 全部应用并清空，否则会变成"每帧覆盖存档"，玩家自己赚的宝石永远涨不上去。
+-- 防御塔技能冷却倍率。与「塔技能无CD」开关是**两套独立状态**（那个是清零 + 记原值还原）。
+--   1. attacks.list[1] 是**基础攻击**，归攻速管，这里跳过。
+--   2. static_cooldown 的条目跳过（游戏自己的重置逻辑也排除它们）。
+--   3. attacks.min_cooldown 是**第二层地板**（法师塔共享），不缩它技能有硬顶。
+-- wildcat 之类每帧从 powers.skill_X.cooldown[级] 重拷 → 源和派生都要缩，只缩派生会被覆盖回原样。
+local function tower_cd_scale(e, f)
+  local n = 0
+  local function scale_at(at)
+    if type(at) ~= "table" or rawget(at, "static_cooldown") == true then return end
+    local cd = rawget(at, "cooldown")
+    if type(cd) == "number" then at.cooldown = cd * f n = n + 1 end
+  end
+  local a = rawget(e, "attacks")
+  if type(a) == "table" then
+    local mn = rawget(a, "min_cooldown")
+    if type(mn) == "number" then a.min_cooldown = mn * f n = n + 1 end
+    local list = rawget(a, "list")
+    if type(list) == "table" then
+      -- **只动技能**：基础攻击那几条归「塔攻速」管（与上面同一套判据的补集）
+      local _, marked = list_marks(list)
+      for i, at in pairs(list) do
+        if not is_basic_atk(at, i, marked > 0) then scale_at(at) end
+      end
+    end
+  end
+  local ta = rawget(e, "timed_attacks")
+  local tl = type(ta) == "table" and rawget(ta, "list") or nil
+  if type(tl) == "table" then
+    for _, at in pairs(tl) do scale_at(at) end
+  end
+  -- powers.skill_X.cooldown：可能是数字，也可能是**按等级索引的表**（wildcat 那种源）
+  local p = rawget(e, "powers")
+  if type(p) == "table" then
+    for _, v in pairs(p) do
+      if type(v) == "table" then
+        local cd = rawget(v, "cooldown")
+        if type(cd) == "number" then
+          v.cooldown = cd * f n = n + 1
+        elseif type(cd) == "table" then
+          for j, x in pairs(cd) do
+            if type(x) == "number" then cd[j] = x * f n = n + 1 end
+          end
+        end
+      end
+    end
+  end
+  return n
+end
+
+local function tower_cd_apply()
+  -- 「塔技能无CD」开着时整个跳过：那些字段现在被清成 0，乘什么都没意义；更要紧的是
+  -- **不能记** —— 记了我们就会以为已经缩过，等开关关掉把原值写回后倍率静默失效。
+  if S.nocd.tower then return 0 end
+  local s = store_of()
+  if not s then return 0 end
+  local want = S.tower.cd
+  local n = 0
+  each_entity(s, function(e)
+    if is_tower(e) then
+      local got = S.tower_cd_seen[e]
+      if got == nil then got = 1 end
+      if got ~= want then
+        tower_cd_scale(e, want / got)
+        S.tower_cd_seen[e] = want
+        n = n + 1
+      end
+    end
+    return 0
+  end)
+  return n
+end
+
+-- 英雄四项倍率：血量 / 伤害 / 攻速 / 技能CD。判据是「实体带 .hero」（含剧情英雄）。
+-- 血量 / 攻速 / 技能CD 都会被游戏自己重写（升级回调 fn_level_up），所以一律**相对缩放**：
+--   血量 health.hp_max + hp（成对）+ hero.level_stats.hp_max[]（升级是从这张数组重写的）
+--   伤害 unit.damage_factor（引擎级总倍率）
+--   攻速 容器级 cooldown + 基础攻击的 cooldown / hit_time（前摇是绝对秒数，第二层地板）
+--   CD   timed_attacks.list 的**全部**条目 —— 下标不固定（gerald 的 [1] 是 skill_a，zefira 的 [1] 是大招）
+local HERO_ONE = { hp = 1, damage = 1, rate = 1, cd = 1 }
+local HERO_ATK_CONT = { "melee", "ranged", "ultimate_melee" }
+
+local function hero_rescale(e, from, to)
+  local n = 0
+  if to.hp ~= from.hp then
+    local f = to.hp / from.hp
+    local h = rawget(e, "health")
+    if type(h) == "table" then n = n + scale_health(h, f) end
+    local hero = rawget(e, "hero")
+    local ls = type(hero) == "table" and rawget(hero, "level_stats") or nil
+    local row = type(ls) == "table" and rawget(ls, "hp_max") or nil
+    if type(row) == "table" then
+      for i, v in pairs(row) do
+        if type(v) == "number" then row[i] = v * f n = n + 1 end
+      end
+    end
+  end
+  if to.damage ~= from.damage then
+    local u = rawget(e, "unit")
+    if type(u) == "table" and type(u.damage_factor) == "number" then
+      u.damage_factor = u.damage_factor * (to.damage / from.damage)
+      n = n + 1
+    end
+    -- 不认 unit.damage_factor 的那几支子弹要另走模板（见 hero_bullet_apply）
+    n = n + hero_bullet_apply(e, to.damage)
+  end
+  if to.rate ~= from.rate then
+    local fc = from.rate / to.rate
+    for i = 1, #HERO_ATK_CONT do
+      local c = rawget(e, HERO_ATK_CONT[i])
+      if type(c) == "table" then
+        local cc = rawget(c, "cooldown")
+        if type(cc) == "number" then c.cooldown = cc * fc n = n + 1 end
+        local list = rawget(c, "list") or rawget(c, "attacks")
+        if type(list) == "table" then
+          -- 同样只动基础攻击（melee.attacks[2] 常是 special_attack，没这个标记）
+          local _, marked = list_marks(list)
+          for i, at in pairs(list) do
+            if type(at) == "table" and rawget(at, "disabled") ~= true
+               and is_basic_atk(at, i, marked > 0) then
+              if type(at.cooldown) == "number" then at.cooldown = at.cooldown * fc n = n + 1 end
+              if type(at.hit_time) == "number" then at.hit_time = at.hit_time * fc n = n + 1 end
+              if type(at.shoot_time) == "number" then at.shoot_time = at.shoot_time * fc n = n + 1 end
+            end
+          end
+        end
+      end
+    end
+  end
+  if to.cd ~= from.cd then
+    local f = to.cd / from.cd
+    local ta = rawget(e, "timed_attacks")
+    local list = type(ta) == "table" and rawget(ta, "list") or nil
+    if type(list) == "table" then
+      for _, at in pairs(list) do
+        if type(at) == "table" and rawget(at, "disabled") ~= true
+           and type(rawget(at, "cooldown")) == "number" then
+          at.cooldown = at.cooldown * f n = n + 1
+        end
+      end
+    end
+  end
+  return n
+end
+
+-- 远程伤害的坑：子弹带不带 use_unit_damage_factor 决定它吃不吃 unit.damage_factor。
+--   带 → 缩 unit 就够，**模板绝不能碰**（两边都缩会平方）；
+--   不带 → 缩 unit 完全不起作用，必须改**子弹模板**的 damage_min/max（bolin / myriath）。
+-- 按运行时的实际标志判定，不写死英雄名单。
+local function find_template(name)
+  local edb = game_mod("entity_db")
+  if type(edb) ~= "table" then return nil end
+  local gt = rawget(edb, "get_template")
+  if type(gt) == "function" then
+    local ok, t = pcall(gt, edb, name)
+    if ok and type(t) == "table" then return t end
+  end
+  local reg = rawget(edb, "entities")
+  if type(reg) ~= "table" then return nil end
+  local hit = rawget(reg, name)
+  if type(hit) == "table" then return hit end
+  -- 注册表的**键**不一定等于 template_name，所以还得扫一遍（只在倍率变化时发生，不在热路径）
+  for _, t in pairs(reg) do
+    if type(t) == "table" and rawget(t, "template_name") == name then return t end
+  end
+  return nil
+end
+
+-- 只对"不认 unit.damage_factor"的子弹动手。返回补了几处。
+local HERO_BULLET_STATS = { "ranged_damage_min", "ranged_damage_max" }
+
+hero_bullet_apply = function(e, want)
+  local r = rawget(e, "ranged")
+  if type(r) ~= "table" then return 0 end
+  local list = rawget(r, "attacks") or rawget(r, "list")
+  if type(list) ~= "table" then return 0 end
+  local n, any_plain = 0, false
+  for _, at in pairs(list) do
+    if type(at) == "table" then
+      local bn = rawget(at, "bullet")
+      if type(bn) == "string" then
+        local t = find_template(bn)
+        local b = type(t) == "table" and rawget(t, "bullet") or nil
+        if type(b) == "table" and rawget(b, "use_unit_damage_factor") ~= true then
+          any_plain = true
+          local got = S.hero_bullet_seen[t]
+          if got == nil then got = 1 end
+          if got ~= want then
+            local f = want / got
+            if type(b.damage_min) == "number" then b.damage_min = b.damage_min * f n = n + 1 end
+            if type(b.damage_max) == "number" then b.damage_max = b.damage_max * f n = n + 1 end
+            S.hero_bullet_seen[t] = want
+          end
+        end
+      end
+    end
+  end
+  -- level_stats 那两张按等级索引的数组**只在查明确有"不认标志"的子弹时才缩**：
+  -- 升级回调是从它们重写子弹模板的，不缩就白改；但认标志的英雄缩了会**平方**
+  -- （数组 → 模板，再乘 unit.damage_factor）。
+  if not any_plain then return n end
+  local hero = rawget(e, "hero")
+  local ls = type(hero) == "table" and rawget(hero, "level_stats") or nil
+  if type(ls) == "table" then
+    for _, key in ipairs(HERO_BULLET_STATS) do
+      local row = rawget(ls, key)
+      if type(row) == "table" then
+        local got = S.hero_bullet_seen[row]
+        if got == nil then got = 1 end
+        if got ~= want then
+          local f = want / got
+          for i, v in pairs(row) do
+            if type(v) == "number" then row[i] = v * f n = n + 1 end
+          end
+          S.hero_bullet_seen[row] = want
+        end
+      end
+    end
+  end
+  return n
+end
+
+local function hero_apply()
+  local s = store_of()
+  if not s then return 0 end
+  local want = S.hero
+  local n = 0
+  each_entity(s, function(e)
+    if is_hero(e) then
+      local got = S.hero_seen[e]
+      -- 逐字段兜底（同 tower_apply：S 跨次注入存活，旧记录可能缺格）
+      local g = { hp = (got and got.hp) or 1, damage = (got and got.damage) or 1,
+                  rate = (got and got.rate) or 1, cd = (got and got.cd) or 1 }
+      -- 「英雄技能无CD」开着时，timed_attacks 的冷却被清成 0 —— 这一项按"维持现状"处理，
+      -- 既不缩也不记（理由同 tower_cd_apply：记了会让倍率在开关关掉后静默失效）。
+      local want_cd = want.cd
+      if S.nocd.hero then want_cd = g.cd end
+      if not got or g.hp ~= want.hp or g.damage ~= want.damage
+         or g.rate ~= want.rate or g.cd ~= want_cd then
+        local to = { hp = want.hp, damage = want.damage, rate = want.rate, cd = want_cd }
+        hero_rescale(e, g, to)
+        S.hero_seen[e] = to
+        n = n + 1
+      end
+    end
+    return 0
+  end)
+  return n
+end
+
+-- 攻速的**第三层**：把攻击动画本身放快。
+-- 射击周期 = max(cooldown, 射击动画时长)：箭塔 shoot 是 28 帧 @30fps ≈ 0.93s，而 cooldown 只有
+-- {1, 0.9, 0.7, 0.6} —— **2 级以上光缩 cooldown 是白改**，动画才是地板。
+-- 落点 sys.render:on_update **之前**：它每 tick 现读 s.fps 送进 A:fni，没有缓存 → 当帧生效
+-- （挂 tick() 会晚一帧）。
+-- ⚠️ fps 是**每实体 × 每 sprite 索引**的，会影响那条索引上的**所有**动画 → 只按动画名精确匹配，
+--    不在攻击期间就写回原值。箭塔 idle 只 1 帧看不出来，英雄不行（同一条索引上还挂着 walk/death）。
+-- ⚠️ 还原写**记下来的原值**，绝不写 nil：模板里有两处非 nil 的 fps。
+local ANIM_FPS = 30            -- 动画默认帧率（all/constants.lua FPS = 30，animation_db.fps）
+local ANIM_CONT = { "attacks", "timed_attacks", "melee", "ranged", "ultimate_melee" }
+
+local function fps_base(s)
+  local box = S.anim_base[s]
+  if box == nil then
+    box = { orig = rawget(s, "fps") }
+    S.anim_base[s] = box
+  end
+  return box.orig
+end
+
+-- 这个模板可能播的攻击动画名。按模板名缓存（动画名来自模板，实体上不会变）。
+local function anim_groups_for(e)
+  local nm = tpl_name(e)
+  if nm == "" then return nil end
+  local got = S.anim_groups[nm]
+  if got ~= nil then
+    if got == false then return nil end
+    return got
+  end
+  local out = {}
+  local nodes = { e, rawget(e, "tower"), rawget(e, "hero") }
+  for i = 1, 3 do
+    local nd = nodes[i]
+    if type(nd) == "table" then
+      for j = 1, #ANIM_CONT do
+        local c = rawget(nd, ANIM_CONT[j])
+        if type(c) == "table" then
+          local list = rawget(c, "list") or rawget(c, "attacks") or c
+          if type(list) == "table" then
+            for _, at in pairs(list) do
+              if type(at) == "table" then
+                local an = rawget(at, "animation")
+                if type(an) == "string" then out[an] = true end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  if next(out) == nil then S.anim_groups[nm] = false return nil end
+  S.anim_groups[nm] = out
+  return out
+end
+
+-- 这个 sprite 现在播的是不是攻击动画。
+--   ① sprite.name 直接等于组名 —— angles 里没有这个组时游戏就是用组名播的（all/utils.lua）
+--   ② sprite.name 是该组 angles 展开出来的名（箭塔 angles.shoot = {"shootback","shoot"}）
+--   ③ 基名 + "_" 前缀：模板写 "attack"，游戏实际播 "attack_1" / "attack_4_explosive"
+--   ④ relax（**只给塔**）：见下面的长注释
+local function is_attack_sprite(s, groups, relax)
+  local nm = rawget(s, "name")
+  if type(nm) ~= "string" then return false end
+  if groups[nm] then return true end
+  local ang = rawget(s, "angles")
+  if type(ang) == "table" then
+    for g in pairs(groups) do
+      local l = rawget(ang, g)
+      if type(l) == "table" then
+        for _, v in pairs(l) do if v == nm then return true end end
+      end
+    end
+  end
+  for g in pairs(groups) do
+    if nm:sub(1, #g + 1) == g .. "_" then return true end
+  end
+  if relax and rawget(s, "loop") ~= true and not nm:find("idle", 1, true) then return true end
+  return false
+end
+
+-- ⚠️ 塔要放宽（relax），英雄不放宽。
+-- 「分段射击」的塔会播一串**模板里没声明过**的动画名：炮塔是 rotation_N（瞄准 / 收招），
+-- 法师塔是 shootstart / shootend / buff。只按模板里那个基名匹配就一条都命不中，周期纹丝不动。
+-- 放宽依据：塔脚本里被 y_animation_play / y_animation_wait **等待**的动画名没有一个像待机名，
+-- 全是射击 / 技能 / 出场序列的一环。**待机必须排除** —— idle / idle_2 / idlenothing 有用
+-- loop=false 起的，光看 loop 会把它们一起加速。
+-- 副作用：stun / 出场 / 技能光效这类一次性动画也会变快，都只是观感、不影响数值。
+local function anim_rate_apply(e, rate, relax)
+  local r = rawget(e, "render")
+  local list = type(r) == "table" and rawget(r, "sprites") or nil
+  if type(list) ~= "table" then return 0 end
+  local groups = anim_groups_for(e)
+  local n = 0
+  for _, s in pairs(list) do
+    if type(s) == "table" then
+      local base = fps_base(s)
+      -- rate == 1 时 want 就是 base —— 这正是"收尾那趟"要用到的还原路径
+      local want = base
+      if rate ~= 1 and (groups or relax) and is_attack_sprite(s, groups or {}, relax) then
+        want = (base or ANIM_FPS) * rate
+      end
+      if rawget(s, "fps") ~= want then s.fps = want n = n + 1 end
+    end
+  end
+  return n
+end
+
+-- 把碰过的 sprite 全部还回原值。只还 S.anim_base 里记过的 —— 没记录 = 我们没碰过，
+-- 绝不能顺手写 nil（会改掉带 fps 的那两处模板）。
+local function anim_restore()
+  local n = 0
+  for s, box in pairs(S.anim_base) do
+    if type(s) == "table" and rawget(s, "fps") ~= box.orig then
+      s.fps = box.orig
+      n = n + 1
+    end
+  end
+  return n
+end
+
+anim_apply = function()
+  local tr, hr = S.tower.rate, S.hero.rate
+  if tr == 1 and hr == 1 then
+    -- 全回到 x1：补跑一趟把那批 sprite 还回去，然后停手（这一趟不能省）
+    if not S.anim_active then return 0 end
+    S.anim_active = false
+    return anim_restore()
+  end
+  S.anim_active = true
+  local s = store_of()
+  if not s then return 0 end
+  local n = 0
+  each_entity(s, function(e)
+    local rate
+    if is_tower(e) then rate = tr
+    elseif is_hero(e) then rate = hr
+    else return 0 end
+    -- rate == 1 的那一类也要走一趟：它可能刚被调回 x1，得把 sprite 还回去
+    n = n + anim_rate_apply(e, type(rate) == "number" and rate or 1, is_tower(e))
+    return 0
+  end)
+  return n
+end
+
+install_anim_hook = function()
+  if S.anim_hook_done then return false end
+  local sys = game_mod("systems")
+  local r = (type(sys) == "table") and rawget(sys, "render") or nil
+  local orig = (type(r) == "table") and rawget(r, "on_update") or nil
+  if type(orig) ~= "function" then return false end
+  S.anim_hook_done = true
+  rawset(r, "on_update", function(...)
+    if S.tower.rate ~= 1 or S.hero.rate ~= 1 or S.anim_active then
+      -- 出错要留痕：裸 pcall 会把错误吞成"改了没反应"
+      local ok, err = pcall(anim_apply)
+      if not ok then record_err("anim@render", err) end
+    end
+    return orig(...)
+  end)
+  S.hooks[#S.hooks + 1] = "systems.render.on_update(attack fps)"
+  return true
+end
+
+-- 存档层：游戏内改进度（星星 / 升级树 / 法术）。存档不常驻内存（异步文件 IO），但总得经过
+-- 「文本 → Lua 表」和「Lua 表 → 文本」两个转换，在那两个函数上钩一道即可。
+-- ⚠️ 待办表 S.slot_ops 是**一次性**的：命中一次存档表就全部应用并清空，否则会变成"每帧覆盖存档"。
 
 S.slot_ops = S.slot_ops or {}
 
@@ -801,7 +1316,7 @@ local function is_slot_like(t)
      and type(rawget(t, "upgrades_trees")) == "table"
 end
 
--- 星星奖励轨道总量（= map_data.lua 的 progression_rewards_premium，须与离线编辑器一致）。
+-- 星星奖励轨道总量（= map_data.lua 的 progression_rewards_premium，换版本要对着游戏数据核）。
 local REWARD_LAST_STARS = 84
 
 -- 升级树节点。存档里是短 id，kr6/upgrades.lua 里带前缀（archers_l1），两套不能混。
@@ -943,6 +1458,77 @@ end
 -- 关卡内英雄即时升级：先写 hero.level 与 hero.xp，再调 hero.fn_level_up(实体, store, true)
 -- 让游戏自己应用属性（光调回调不会改等级）。用 level_stats.hp_max 校验是否真的生效。
 -- 上限 10 级（hero_xp_thresholds 有 9 个阈值），等级 N 对应 thr[N-1]。
+-- 满级成就的 id（前四个按英雄、最后一个按法术，见 kr6/achievements_handlers.lua）。
+local ACH_IDS = { "TIME_SAVIOUR", "BATTLEMAGE", "SHARPSHOOTER", "BATTLEBORN",
+                  "PLAYING_WITH_POWER" }
+
+local function ach_have(id)
+  local A = game_mod("achievements")
+  if type(A) ~= "table" or type(rawget(A, "have")) ~= "function" then return nil end
+  local ok, v = pcall(A.have, A, id)
+  return (ok and v == true) or nil
+end
+
+-- 直接解锁满级成就：**直接发游戏自己的信号**。
+-- 这两个成就只认游戏**自己**发出来的信号，而我们直接写数值时信号从没发过：
+--   英雄 hero-level-increased 只在**关卡内升级路径**发（fn_level_up 内部不发）→「英雄拉满」拿不到；
+--   法术 power-level-increased 在**关卡结束存档**时发、且要求 `old_level < new_level` ——
+--   把存档经验直接填到 6 级两个 level 相等，永远发不出来。
+-- signal 是 hump.signal 单例，emit 没有守卫；成就自身的持久化在 A:got 里。
+-- ⚠️ 英雄那个处理器要求**发信号那一刻正好 10 级**，所以先补到 10 级再发。
+unlock_achievements = function()
+  local sig = game_mod("hump.signal")
+  if type(sig) ~= "table" or type(rawget(sig, "emit")) ~= "function" then
+    return nil, "拿不到信号模块（hump.signal 没加载）"
+  end
+  local s = store_of()
+  if not s then return nil, "不在关卡内" end
+
+  -- 先记下动之前的状态，播报时才能如实说"这次新解锁了哪几个"
+  local before = {}
+  for i = 1, #ACH_IDS do before[ACH_IDS[i]] = ach_have(ACH_IDS[i]) end
+
+  local sent, failed = 0, 0
+  local team = rawget(s, "hero_team")
+  if type(team) == "table" then
+    for _, e in pairs(team) do
+      local h = (type(e) == "table") and rawget(e, "hero") or nil
+      if type(h) == "table" and type(rawget(h, "level")) == "number" then
+        -- 处理器写死了 `entity.hero.level == 10`，所以先补到 10 级
+        local f = rawget(h, "fn_level_up")
+        if h.level < 10 and type(f) == "function" then
+          h.level = 10
+          pcall(f, e, s, true)
+        end
+        if h.level >= 10 then
+          local ok, err = pcall(sig.emit, "hero-level-increased", e)
+          if ok then sent = sent + 1 else failed = failed + 1 record_err("ach@hero", err) end
+        end
+      end
+    end
+  end
+  -- 法术：处理器只看 `new_level >= 6`，不看是哪个法术，所以按 6 发即可
+  do
+    local ok, err = pcall(sig.emit, "power-level-increased", "power", 6)
+    if ok then sent = sent + 1 else failed = failed + 1 record_err("ach@power", err) end
+  end
+
+  if sent == 0 then return nil, "没有可发的信号" end
+  local newly = {}
+  for i = 1, #ACH_IDS do
+    local id = ACH_IDS[i]
+    if ach_have(id) and not before[id] then newly[#newly + 1] = id end
+  end
+  local msg = "已发 " .. sent .. " 个满级信号"
+  if #newly > 0 then
+    msg = msg .. "，本次解锁：" .. table.concat(newly, "、")
+  else
+    msg = msg .. "（对应成就此前已解锁）"
+  end
+  if failed > 0 then msg = msg .. "（" .. failed .. " 个出错，见 _kr6_err.txt）" end
+  return msg
+end
+
 hero_raise = function(mode)
   local s = store_of()
   if not s then return nil, "不在关卡内" end
@@ -1029,7 +1615,7 @@ local function apply_one_op(t, o)
     end
     return true
   elseif op == "power_max" then
-    -- 法术**光填树会变成负点数**（玩家实测）：点数按等级发（upgrades.lua 的
+    -- 法术**光填树会变成负点数**：点数按等级发（upgrades.lua 的
     -- get_points_by_level），买树上的节点花的就是它（get_spent_points）。所以先把等级
     -- 拉满 —— 经验写到阈值表顶以上，游戏读档时自己按经验重算等级并补发点数（和英雄拉满
     -- 同一条路），再填树。阈值表读不到就**整条失败、不填树**：宁可不做，也不造负点数。
@@ -1103,8 +1689,8 @@ local function apply_slot_ops(t)
   -- 失败的也清掉 —— 否则一条坏操作会永远卡在那里反复失败。
   for i = #ops, 1, -1 do ops[i] = nil end
   S.slot_ops_done = (S.slot_ops_done or 0) + n
-  -- 成功了要**主动报出来**：这条管线的待办只存在内存里，游戏若没重写存档就无声丢失。
-  -- 不报的话，"按下去了但什么都没发生"和"还没轮到应用"玩家分不出来（踩过这个坑）。
+  -- 成功了要**主动报出来**：待办只存在内存里，游戏若没重写存档就无声丢失 ——
+  -- 不报的话玩家分不出"按了没反应"和"还没轮到应用"。
   if n > 0 then S.slot_applied = n end
   return n
 end
@@ -1112,7 +1698,12 @@ end
 -- 暴露给测试台：测试环境里没有 storage 模块、钩子装不上，而存档改写必须能单独测。
 S.mult_live = mult_apply_live        -- 暴露给测试台：倍率那条在测试里要能单独调
 S.mult_apply = mult_apply            -- 模板那条（测试台没有 entity_db，直接喂一张假模板表）
-S.tower_apply_fn = tower_apply       -- 塔射程/攻速那条（测试台喂假的塔实体）
+S.tower_apply_fn = tower_apply       -- 塔射程/攻速/伤害那条（测试台喂假的塔实体）
+S.tower_cd_apply_fn = tower_cd_apply -- 塔技能CD 那条（独立状态，和「无CD」开关不是一回事）
+S.hero_apply_fn = hero_apply         -- 英雄血量/伤害/攻速/技能CD 那条
+S.anim_apply_fn = anim_apply         -- 攻速第三层：攻击动画的 fps（测试台喂假 sprite）
+S.anim_restore_fn = anim_restore
+S.anim_install = install_anim_hook
 S.nocd_clear_buttons = clear_button_list   -- 测试台没有 game_gui，直接喂几个假按钮
 S.nocd_clear_entity = clear_entity_cds     -- 同上：英雄/塔那条
 S.nocd_restore = nocd_restore              -- 关掉开关时要能还原（可逆性测试）
@@ -1122,13 +1713,10 @@ S.gold_push = gold_push              -- 测试台：击杀金币 ×2 那条要�
 S.gold_pop = gold_pop
 S.gold_install = install_gold_hook
 
--- 存档只在**两个**函数上过（签名已从源码确认，不必再猜）：
---   读 storage:load_lua(filename, force)      → 存档是**返回值**
---   写 storage:save_slot(data_table, idx, ..) → 存档是**第一个参数**
--- 读为什么挂 load_lua 而不是 load_slot：load_slot 自己就是调 load_lua，
--- 而且 main.lua 也有一条绕过 load_slot 直接用 load_lua 读存档文件的路。
+-- 存档只在**两个**函数上过（签名已从源码确认）：
+--   读 storage:load_lua(f, force) → 存档是**返回值**；写 storage:save_slot(data, idx, ..) → 是**第一个参数**。
+-- 读挂 load_lua 而不是 load_slot：后者自己就是调它，而且 main.lua 有一条绕过 load_slot 直接读存档的路。
 -- save_slot 是 slot 文件**唯一**的写入者（delete_slot 只删不写）。
--- （原先挂的 deserialize_lua/serialize_lua 只在**平台云同步**里被调，桌面本地路径根本不经过。）
 local SLOT_HOOKS = {
   { "storage", "load_lua",  "ret" },
   { "storage", "save_slot", "arg" },
@@ -1190,7 +1778,9 @@ end
 -- menu
 local MENU_TEXT = {
   cn = {
-    title = "KR6 修改器", hint = "Home / Tab 开关   ↑↓ 选择   ←→ 调整   Enter 执行   Esc 关闭",
+    -- ⚠️ 提示行只能用**游戏字体里有的字**：那是游戏裁剪过的子集字体（只 1901 个码位），
+    -- 实测缺「执」「闭」两个字 —— 写上去就是空白。改这行前先把字过一遍字体 cmap。
+    title = "KR6 修改器", hint = "Home/Tab 开关  ↑↓选择  ←→调整  Enter 确定  Esc 收起",
     gold_add = "金币 +1000", gold_sub = "金币 -1000",
     lives_add = "生命 +10", lives_sub = "生命 -10",
     hold = "无限金钱", hold_lives = "生命锁定",
@@ -1202,11 +1792,17 @@ local MENU_TEXT = {
     hdr_save = "存档（回主菜单再进档生效）",
     enemy_hp = "敌人血量", enemy_speed = "敌人移速",
     tower_range = "塔射程",
+    tower_damage = "塔伤害", tower_atkspd = "塔攻速", tower_skill_cd = "塔技能CD",
+    hero_hp = "英雄血量", hero_damage = "英雄伤害",
+    hero_atkspd = "英雄攻速", hero_skill_cd = "英雄技能CD",
     stars_max = "星星拉满", unlock_tree = "塔树升满", power_max = "法术升满",
-    hdr_cd = "技能冷却",
+    hdr_cd = "技能无CD（开关）",
     nocd_power = "法术无CD", nocd_hero = "英雄技能无CD", nocd_tower = "塔技能无CD",
     hero_now_up = "英雄升一级（本关立即）", hero_now_max = "英雄拉满（本关立即）",
-    close = "关闭菜单",
+    -- 直接发游戏自己的满级信号（英雄 + 法术），见 unlock_achievements
+    ach_unlock = "解锁满级成就（立即）",
+    -- ⚠️ 不写「关闭」：字体子集里没有「闭」这个字（画出来是空白）—— 见 hint 那条注释。
+    close = "收起菜单",
     on = "开", off = "关",
     labels = { "金币", "生命", "关卡" },
     nolvl = "（未进入关卡）",
@@ -1226,11 +1822,16 @@ local MENU_TEXT = {
     hdr_save = "SAVE (apply on reload)",
     enemy_hp = "enemy HP", enemy_speed = "enemy speed",
     tower_range = "tower range",
+    tower_damage = "tower damage", tower_atkspd = "tower attack speed",
+    tower_skill_cd = "tower skill cd",
+    hero_hp = "hero HP", hero_damage = "hero damage",
+    hero_atkspd = "hero attack speed", hero_skill_cd = "hero skill cd",
     stars_max = "max stars", unlock_tree = "max tower trees", power_max = "max powers",
-    hdr_cd = "COOLDOWNS",
+    hdr_cd = "NO-COOLDOWN (SWITCHES)",
     nocd_power = "no power cooldown", nocd_hero = "no hero skill cd",
     nocd_tower = "no tower skill cd",
     hero_now_up = "hero +1 level (now)", hero_now_max = "hero max (now)",
+    ach_unlock = "unlock max-level achievements (now)",
     close = "close menu",
     on = "ON", off = "OFF",
     labels = { "gold", "lives", "lvl" },
@@ -1282,7 +1883,7 @@ local function menu_items()
     -- 击杀金币倍率。**只放大击杀**：漏怪也给金币，但那走另一个系统，不受这里影响。
     -- 下限 x1（= 完全不动），所以它和「敌人血量」一样是 x1 起步的可调行，不是开关。
     { id = "gold_mult", label = L("gold_mult"),
-      adjust = { set = S.gold, key = "mult", step = 0.5, sign = 1, min = 1, max = 10 },
+      adjust = { set = S.gold, key = "mult", min = 1, max = 10 },
       value = function() return fmt_mult(S.gold.mult) end },
 
     { id = "hdr_wave",  label = L("hdr_wave"), header = true },
@@ -1291,30 +1892,51 @@ local function menu_items()
     -- 倍率行：左右键调 S.mult 那一项（不走 store，故 tweak 有第二种目标）；右=调高、左=调低。
     { id = "hdr_units", label = L("hdr_units"), header = true },
     { id = "enemy_hp", label = L("enemy_hp"),
-      adjust = { set = M, key = "enemy_hp", step = 0.5, sign = 1, min = 0.1, max = 20 },
+      adjust = { set = M, key = "enemy_hp", min = 0.1, max = 10 },
       value = function() return fmt_mult(S.mult.enemy_hp) end },
     { id = "enemy_speed", label = L("enemy_speed"),
-      adjust = { set = M, key = "enemy_speed", step = 0.25, sign = 1, min = 0.1, max = 10 },
+      adjust = { set = M, key = "enemy_speed", min = 0.1, max = 10 },
       value = function() return fmt_mult(S.mult.enemy_speed) end },
-    -- 防御塔。字段在**活塔实体**上（attacks.range / attacks.list[].cooldown），选敌时现读，
-    -- 所以改完立刻生效；塔升级会重建实体，那种新表由 tower_apply 自己补上。
-    -- ⚠️ 不是 balance.towers.*.stats.*（那个只喂 UI 数字，老版本栽在这）。
-    -- ⚠️ 只有射程**没有攻速**：攻速那条实测是通的（把倍率调低塔会明显变慢），但**调高
-    -- 很快就不起作用** —— 塔自己只设标志位，真正射击的是 shooter_controller，它在生成
-    -- 子弹后要 `U.y_animation_wait` **等射击动画播完**才处理下一次，所以周期是
-    -- `max(cooldown, 动画时长)`。箭塔 4 级 cooldown 已经 0.6s，和动画地板基本持平，
-    -- 再调就没用了。底层支持还在（S.tower.rate + tower_rescale 的倒数那半），
-    -- 只是不摆上菜单 —— 详见 HANDOFF「防御塔射程 / 攻速」。
+    -- 防御塔四项。字段都在**活塔实体**上、选敌时现读，所以改完立刻生效；塔升级会重建实体，
+    -- 新表由 tower_apply 自己补上。
+    -- ⚠️ 不是 balance.towers.*.stats.*（那个只喂 UI 数字）。攻速必须三层一起改（冷却 / 动画 fps / 前摇）。
     { id = "hdr_tower", label = L("hdr_tower"), header = true },
+    { id = "tower_damage", label = L("tower_damage"),
+      adjust = { set = S.tower, key = "damage", min = 0.1, max = 10 },
+      value = function() return fmt_mult(S.tower.damage) end },
+    { id = "tower_atkspd", label = L("tower_atkspd"),
+      adjust = { set = S.tower, key = "rate", min = 0.1, max = 10 },
+      value = function() return fmt_mult(S.tower.rate) end },
     { id = "tower_range", label = L("tower_range"),
-      adjust = { set = S.tower, key = "range", step = 0.25, sign = 1, min = 0.1, max = 10 },
+      adjust = { set = S.tower, key = "range", min = 0.1, max = 10 },
       value = function() return fmt_mult(S.tower.range) end },
+    { id = "tower_skill_cd", label = L("tower_skill_cd"),
+      adjust = { set = S.tower, key = "cd", min = 0.1, max = 1 },
+      value = function() return fmt_mult(S.tower.cd) end },
 
     -- 英雄**单独一组**：它们和上面那两项（敌人属性倍率）不是一回事 ——
     -- 倍率是本关临时改数值，英雄升级会经游戏自己写回档案。混在一起标签会撒谎。
     { id = "hdr_hero",  label = L("hdr_hero"), header = true },
+    -- 英雄四项。命中判据一律是「实体带 .hero」——**含剧情英雄**（alleria / blackburn /
+    -- denas 不在 store.hero_team 里，只看那个列表会漏）。
+    { id = "hero_hp", label = L("hero_hp"),
+      adjust = { set = S.hero, key = "hp", min = 0.1, max = 10 },
+      value = function() return fmt_mult(S.hero.hp) end },
+    { id = "hero_damage", label = L("hero_damage"),
+      adjust = { set = S.hero, key = "damage", min = 0.1, max = 10 },
+      value = function() return fmt_mult(S.hero.damage) end },
+    { id = "hero_atkspd", label = L("hero_atkspd"),
+      adjust = { set = S.hero, key = "rate", min = 0.1, max = 10 },
+      value = function() return fmt_mult(S.hero.rate) end },
+    { id = "hero_skill_cd", label = L("hero_skill_cd"),
+      adjust = { set = S.hero, key = "cd", min = 0.1, max = 1 },
+      value = function() return fmt_mult(S.hero.cd) end },
     { id = "hero_now_up",  label = L("hero_now_up") },
     { id = "hero_now_max", label = L("hero_now_max") },
+    -- 排在「拉满」后面：拉满会绕过游戏的升级信号（拿不到满级成就），
+    -- 这一项就是给那种情况兜底的 —— 先拉满再点它，照样能拿成就。
+    -- 直接发游戏自己的满级信号（英雄 + 法术），不用回关卡里打死敌人。见 unlock_achievements。
+    { id = "ach_unlock", label = L("ach_unlock") },
 
     -- 技能冷却。三项**分开**（三类技能的冷却记在不同地方），各自开关、即时生效。
     { id = "hdr_cd", label = L("hdr_cd"), header = true },
@@ -1396,6 +2018,46 @@ local MENU_X, MENU_Y, MENU_W = 60, 90, 430
 -- 面板高度和「按窗口高反推字号」都用它，改了要一起对上，否则底部会被裁掉。
 local EXTRA_LINES = 7
 
+-- 滑条：把**档位下标**线性铺到轨道上（不用对数 —— 档位表本身在 1 附近密、在 10 附近疏，
+-- 线性铺开自动就是接近对数的手感：x1 落在第 10 档，差不多是轨道正中）。
+-- ⚠️ 行高太矮时不摆滑条、也不响应轨道点击，自动退回纯 ←→（任何分辨率都不会挤成一团）。
+local SLIDER_MIN_H = 12
+
+-- 这一行可用的档位下标区间；没有可调语义、或只剩一档时返回 nil。
+local function slider_span(it)
+  if not (it and it.adjust and it.adjust.set and it.adjust.key) then return nil end
+  local a = it.adjust
+  local i0, i1 = ladder_range(a.min, a.max)
+  if i1 <= i0 then return nil end
+  return i0, i1
+end
+
+local function item_by_id(id)
+  local items = S.items or {}
+  for i = 1, #items do
+    if items[i].id == id then return items[i] end
+  end
+  return nil
+end
+
+-- 按鼠标 x 设值（按下的那一刻 + 拖动期间每帧都调）。用的轨道几何是**上一帧**存的，布局稳定。
+local function slider_set_at(id, mxs)
+  local it = item_by_id(id)
+  local i0, i1 = slider_span(it)
+  if not i0 then return false end
+  local tr = nil
+  for i = 1, #S.rects do
+    if S.rects[i].id == id then tr = S.rects[i].track break end
+  end
+  if not tr or tr.w <= 0 then return false end
+  local frac = (mxs - tr.x) / tr.w
+  if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
+  local v = MULT_STEPS[i0 + math.floor(frac * (i1 - i0) + 0.5)]
+  local a = it.adjust
+  if a.set[a.key] ~= v then a.set[a.key] = v end
+  return true
+end
+
 local function draw_menu()
   if not S.menu_open then return end
   if type(love) ~= "table" or type(love.graphics) ~= "table" then return end
@@ -1468,17 +2130,40 @@ local function draw_menu()
     love.graphics.setColor(200, 200, 200, 255)
     love.graphics.print(info, MENU_X, MENU_Y + line_h)
 
-    S.rects = {}
     local y0 = MENU_Y + header_h + 4
     local mx, my = nil, nil
     pcall(function() mx, my = love.mouse.getPosition() end)
+    -- 滑条拖动：**每帧轮询**鼠标状态，不装 mousemoved/mousereleased —— 松手、菜单关闭、
+    -- 鼠标移出窗口这些都天然自愈，不会留下卡住的拖动状态。
+    -- 放在重建 S.rects **之前**：用的就是上一帧那份轨道几何（布局是稳的）。
+    if S.drag then
+      local down = false
+      if mx and type(love.mouse.isDown) == "function" then
+        local okd, d = pcall(love.mouse.isDown, 1)
+        down = (okd and d == true)
+      end
+      if down then slider_set_at(S.drag, mx) else S.drag = nil end
+    end
+    S.rects = {}
     for i = 1, #items do
       local y = y0 + (i - 1) * line_h
       local hover = (mx and my and my >= y and my < y + line_h
                      and mx >= MENU_X - 10 and mx < MENU_X - 10 + MENU_W)
+      -- 滑条轨道：画在数值左边。命中框用**整行高**（好点中），可见的那条只有几像素。
+      local track = nil
+      if not items[i].header and line_h >= SLIDER_MIN_H then
+        local t0 = slider_span(items[i])
+        if t0 then
+          local lw = 0
+          pcall(function() lw = row_font and row_font:getWidth(items[i].label) or 0 end)
+          local tx = MENU_X + 8 + lw + 12
+          local tmax = MENU_X - 10 + MENU_W - 62
+          if tx < tmax - 30 then track = { x = tx, y = y, w = tmax - tx, h = line_h } end
+        end
+      end
       -- 标题行也要有命中框（带 header 标记）：否则点标题会被当成「没点中」漏给游戏。
       S.rects[i] = { x = MENU_X - 10, y = y, w = MENU_W, h = line_h,
-                     id = items[i].id, header = items[i].header }
+                     id = items[i].id, header = items[i].header, track = track }
       if i == S.sel and not items[i].header then
         love.graphics.setColor(80, 110, 190, 220)
         love.graphics.rectangle("fill", MENU_X - 10, y, MENU_W, line_h)
@@ -1512,12 +2197,47 @@ local function draw_menu()
           love.graphics.setColor(210, 200, 120, 255)
           love.graphics.print(items[i].value(), MENU_X - 10 + MENU_W - 56, y + 2)
         end
+        if track then
+          -- 档位下标 → 轨道位置（线性）。当前值不在表上时吸附最近的一档，和 ←→ 一致。
+          local a = items[i].adjust
+          local i0, i1 = slider_span(items[i])
+          local idx = ladder_nearest(tonumber(a.set[a.key]) or 1, i0, i1)
+          local kx = track.x + ((idx - i0) / (i1 - i0)) * track.w
+          local cy = y + line_h * 0.5
+          love.graphics.setColor(55, 55, 55, 230)
+          love.graphics.rectangle("fill", track.x, cy - 2, track.w, 4)
+          love.graphics.setColor(110, 140, 210, 235)
+          love.graphics.rectangle("fill", track.x, cy - 2, kx - track.x, 4)
+          local kh = math.min(line_h - 4, 12)
+          love.graphics.setColor(235, 235, 235, 255)
+          love.graphics.rectangle("fill", kx - 2, cy - kh * 0.5, 4, kh)
+        end
       end
     end
 
     local by = y0 + #items * line_h + 2
+    -- ⚠️ 提示那行最容易超宽（大窗口下行高不压缩、字号满格，中文提示会比面板还宽）。
+    -- 量一下，放不下就换小一号字重画 —— 小字号只建一次，别每帧 newFont。
+    local hfont, hw = row_font, 0
+    if type(T.hint) == "string" and hfont then
+      pcall(function() hw = hfont:getWidth(T.hint) end)
+      if hw > MENU_W - 10 then
+        if S.hint_font == nil then
+          local okh, fh2 = pcall(try_load_font, 12)
+          S.hint_font = (okh and fh2) or false
+        end
+        if S.hint_font then hfont = S.hint_font end
+      end
+      -- 用**最终选定**的字号再量一次并暴露出去：测试按面板宽度钉着这条，
+      -- 保证提示行在任何分辨率/字号下都不会超出面板（S.rects[1].w 就是 MENU_W）。
+      hw = 0
+      pcall(function() hw = hfont:getWidth(T.hint) end)
+      S.hint_w = hw
+    end
+    if hfont then pcall(love.graphics.setFont, hfont) end
     love.graphics.setColor(160, 160, 160, 255)
     love.graphics.print(T.hint, MENU_X, by)
+    if hfont ~= row_font then pcall(love.graphics.setFont, row_font) end
     -- 署名与声明常驻底部；临时消息排它们下面，出现时不会顶动上面几行。
     -- ⚠️ 先判类型：文案缺失时 print(nil) 会抛错，被外层 pcall 一吞就是「底部整块不画」
     -- —— 和标签缺失让整个面板消失是同一类坑（见 labelless_items 那条断言）。
@@ -1581,10 +2301,14 @@ local function menu_key(key)
     local dir = (key == "right") and 1 or -1
     if it and not it.header and it.adjust then
       local a = it.adjust
-      -- 每一行语义一致：右键加、左键减；两种目标都从这一个入口走（见 action 的 tweak）。
-      run_action("tweak", { field = a.field, set = a.set, key = a.key,
-                            min = a.min, max = a.max,
-                            delta = a.step * a.sign * dir })
+      -- 每一行语义一致：右键加、左键减。两种目标都从这一个入口走（见 action 的 tweak）：
+      --   倍率行（set/key）→ delta 是**档位序号**的增量（±1），走档位表
+      --   store 字段行（field）→ delta 才是数值增量（金币 ±1000 那种）
+      if a.set then
+        run_action("tweak", { set = a.set, key = a.key, min = a.min, max = a.max, delta = dir })
+      else
+        run_action("tweak", { field = a.field, delta = a.step * a.sign * dir })
+      end
     end
   end
 end
@@ -1695,15 +2419,37 @@ local function tick(source)
   -- 场上的单位走相对法、自己判断倍率变没变；无条件调用是故意的（调回 1 也要跟着回来）。
   pcall(mult_apply_live)
 
-  -- 防御塔的射程/攻速：同一套「开着就跑、关掉补跑一趟收尾」。
+  -- 防御塔的四项：同一套「开着就跑、关掉补跑一趟收尾」。
   -- 收尾那趟不能省：守卫条件已变假，不补跑就永远停在放大后的值上。
   local tw = S.tower
-  if tw.range ~= 1 or tw.rate ~= 1 then
+  if tw.range ~= 1 or tw.rate ~= 1 or tw.damage ~= 1 then
     pcall(tower_apply)
     S.tower_active = true
   elseif S.tower_active then
     pcall(tower_apply)
     S.tower_active = false
+  end
+  -- 塔技能CD 是**独立一项**（和上面三项不同源），所以另开一个状态。
+  -- ⚠️「无CD」开着时**不许清收尾标志**：这一项整个冻结（tower_cd_apply 自己会立刻返回），
+  -- 清了就再也不会补缩 —— 而 nocd_restore 写回的是"打开开关那一刻"的值，那时还带着旧倍率，
+  -- 结果就是菜单显示 x1、冷却却按旧倍率走，且永不自愈。
+  if tw.cd ~= 1 or S.nocd.tower then
+    pcall(tower_cd_apply)
+    S.tower_cd_active = true
+  elseif S.tower_cd_active then
+    pcall(tower_cd_apply)
+    S.tower_cd_active = false
+  end
+
+  -- 英雄的四项：同样一套。CD 那一项在「英雄技能无CD」开着时是冻结的，
+  -- 所以那期间也不许清收尾标志（理由同上）。
+  local hh = S.hero
+  if hh.hp ~= 1 or hh.damage ~= 1 or hh.rate ~= 1 or hh.cd ~= 1 or S.nocd.hero then
+    pcall(hero_apply)
+    S.hero_active = true
+  elseif S.hero_active then
+    pcall(hero_apply)
+    S.hero_active = false
   end
 
   -- 存档钩子：storage 在 payload 加载时可能还没 require，所以每帧试装一次、装上就不再试。
@@ -1714,6 +2460,8 @@ local function tick(source)
 
   -- 金币钩子同理：systems 可能比 payload 晚 require，每帧试装一次，装上就不再试。
   if not S.gold_hook_done then install_gold_hook() end
+  -- 攻击动画的 fps 钩子同理（攻速的第三层，见 anim_apply）。
+  if not S.anim_hook_done then pcall(install_anim_hook) end
 
   -- 存档改动的回执。钩子里不能调 note()（在 storage 的 IO 边界上，重入），所以结果
   -- 先留在 S 里，在这里组装成人话。
@@ -1753,8 +2501,7 @@ local function wrap_fn(owner, key, source)
   S.wrap_src[key] = true
   rawset(owner, key, function(...)
     local a, b, c, d = orig(...)
-    -- ⚠️ tick 里出错必须留痕：裸 pcall 会把它吞掉，表现成"改了没反应"，查起来极费劲
-    -- （调试 v8 时就吃了这个亏：倍率那块整段没跑，界面上什么都看不到）。
+    -- ⚠️ tick 里出错必须留痕：裸 pcall 会把它吞掉，表现成"改了没反应"，查起来极费劲。
     local ok, e = pcall(tick, source)
     if not ok then record_err("tick@" .. tostring(source), e) end
     return a, b, c, d
@@ -1856,6 +2603,13 @@ local function on_mouse(x, y, button)
       -- 分组标题：**吃掉**这次点击但什么都不做 —— 不能 return false，那会漏给游戏。
       if r.header then return true end
       S.sel = i
+      -- 点中滑条轨道 → 设值并进入拖动，**不**走 run_action（那是"执行 / 只读回执"）。
+      -- 行左侧的文字区仍然保持原来的语义，点它不会误改数值。
+      if r.track and x >= r.track.x and x < r.track.x + r.track.w then
+        S.drag = r.id
+        slider_set_at(r.id, x)
+        return true
+      end
       run_action(r.id)
       return true
     end

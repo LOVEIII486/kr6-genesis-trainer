@@ -4,7 +4,7 @@ kr6-trainer 卸载器。
 
 只删自己写进存档目录的文件，别的一律不动 ——
 游戏自己的存档（settings.lua / global.lua / cache.lua / slot_*.lua /
-steam_autocloud.vdf）永不触碰，编辑器留下的存档备份也**保留**（那是用户数据）。
+steam_autocloud.vdf）永不触碰，改存档时自动留下的备份也**保留**（那是用户数据）。
 
     python uninstall.py
     python uninstall.py --dry-run
@@ -39,8 +39,7 @@ OUR_FILES = [
 OUR_DIRS = ["_orig"]
 # 可以放心清扫的前缀（报告、诊断文件等）
 OUR_PREFIXES = ("_kr6_", "_probe_")
-# 例外：这些匹配上面的前缀但属于**用户数据** —— 是编辑器改存档前的备份，
-# 卸载恰恰是最需要它的时刻，绝不能当垃圾删掉。
+# 例外：这些匹配上面的前缀但属于**用户数据**（改存档前的自动备份），绝不能当垃圾删。
 KEEP_PREFIXES = ("_kr6_slot_backup", "_kr6_global_backup")
 
 PROTECTED = ("cache.lua", "global.lua", "settings.lua", "steam_autocloud.vdf")

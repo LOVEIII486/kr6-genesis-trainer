@@ -1,10 +1,9 @@
 -- kr6 模块覆盖桩（部署为 all/director.lua）
 --
--- 作用：先从 _orig/ 读回游戏**自己的原始字节码**并执行，拿到它原本的返回值（真正的
--- director 模块表），再把这张表交给修改器，最后原样返回 —— 游戏跑的还是它自己的代码。
---
--- 刻意保持最小：只覆盖走正常 require 路径的模块，绝不碰游戏用沙箱环境
--- （level_utils.eval_file + setfenv）加载的那些 —— 那些环境里没有 string/io。
+-- 先从 _orig/ 读回游戏**自己的原始字节码**执行，拿到的模块表交给修改器，最后原样返回
+-- —— 游戏跑的还是它自己的代码。
+-- ⚠️ 只覆盖走正常 require 的模块；游戏用沙箱环境（level_utils.eval_file + setfenv）加载的
+-- 绝不碰 —— 那些环境里没有 string/io。
 local SEP = string.char(92)
 local SAVE = os.getenv("APPDATA") .. SEP .. "kingdom_rush_genesis" .. SEP
 

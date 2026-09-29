@@ -2,8 +2,8 @@
 """
 用游戏自己的 Lua 运行时给源码做编译检查。
 
-    python tools/selftest/check_syntax.py
-    python tools/selftest/check_syntax.py --game-dir "D:\\...\\Kingdom Rush Genesis"
+    python test/check_syntax.py
+    python test/check_syntax.py --game-dir "D:\\...\\Kingdom Rush Genesis"
 """
 import argparse
 import io
@@ -20,11 +20,9 @@ except Exception:
 NL = chr(10)
 Q = chr(34)
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
+ROOT = os.path.abspath(os.path.join(HERE, ".."))
 RT = os.path.join(ROOT, "_scratch", "rt")
-# _kr6trainer_lab.lua 不发布不部署，但留着是给人回头继续开发的：
-# 同一趟运行时顺便编译一遍几乎零成本，而语法烂掉就白留了。
-SOURCES = ["src/_kr6trainer.lua", "src/shadow_director.lua", "src/_kr6trainer_lab.lua"]
+SOURCES = ["src/_kr6trainer.lua", "src/shadow_director.lua"]
 
 
 def main():

@@ -9,11 +9,7 @@ kr6-trainer 安装器。
     python install.py                   # 自动找游戏
     python install.py --game-dir "D:\\...\\Kingdom Rush Genesis"
     python install.py --dry-run         # 只看会做什么，不写文件
-    python install.py --release         # 玩家版：去掉诊断工具
     python install.py --save-dir "C:\\tmp\\test"    # 测试用
-
-装完启动游戏，按 Home 或 Tab 打开菜单（有些键盘没有 Home 键）。
-**别用 F 键** —— F1–F3 是玩家的物品键，而且笔记本上 F 键多半被固件占成媒体键。
 """
 import argparse
 import os
@@ -24,16 +20,6 @@ import zlib
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
-
-def _release_flags(src):
-    """延迟导入 tools/ 里的 release_flags：只带 install.py / uninstall.py / src/
-    的发行包里没有 tools/ 也照样能用。"""
-    sys.path.insert(0, os.path.join(HERE, "tools"))
-    from release_flags import FlagNotFound, release_flags
-    try:
-        return release_flags(src)
-    except FlagNotFound as e:
-        sys.exit("error: %s" % e)
 
 # 游戏 exe = love.exe 的字节 + 追加在后面的 .love zip。
 # 用 EOCD（中央目录结束记录）定位 zip，所以不必知道 love.exe 那部分有多长。
@@ -48,9 +34,8 @@ SHADOW_PATH = "all/director.lua"
 HERE = os.path.dirname(os.path.abspath(__file__))
 SRC = os.path.join(HERE, "src")
 
-# 猜路径兜底。⚠️ 刻意**不做** Steam 库发现（读它的注册表键、再解析它的库配置文件）：
-# 那组特征与 Steam 盗号木马逐字重合，会被杀软启发式误报 —— 详见 docs/HANDOFF.md。
-# 猜不中时由 --game-dir 兜底。
+# 猜路径兜底。⚠️ 刻意**不做** Steam 库发现（读注册表键 + 解析库配置文件）：那组特征与 Steam
+# 盗号木马逐字重合，会被杀软启发式误报 —— 详见 docs/HANDOFF.md。猜不中时由 --game-dir 兜底。
 GAME_CANDIDATES = [
     r"C:\Program Files (x86)\Steam\steamapps\common\Kingdom Rush Genesis",
     r"C:\Program Files\Steam\steamapps\common\Kingdom Rush Genesis",
@@ -184,12 +169,7 @@ def main():
                     help="LOVE identity == save folder name (default: %(default)s)")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--payload",
-                    help="要部署哪个 payload（默认 src/_kr6trainer.lua）。"
-                         "实机探路时指向 src/_kr6trainer_lab.lua —— 诊断项只存在于 lab 版，"
-                         "精简版有源码级硬断言不许带诊断。")
-    ap.add_argument("--release", action="store_true",
-                    help="player build: drop the diagnostic menu items and the "
-                         "periodic auto-report into the Steam-synced save dir")
+                    help="要部署哪个 payload（默认 src/_kr6trainer.lua）。")
     args = ap.parse_args()
 
     game_dir = find_game_dir(args.game_dir)
@@ -219,15 +199,6 @@ def main():
         sys.exit("error: payload 不存在: %s" % payload_path)
     payload = open(payload_path, "rb").read()
     print("payload  : %s" % payload_path)
-
-    if args.release:
-        payload = _release_flags(payload.decode("utf-8")).encode("utf-8")
-    # 按 payload 的实际情况报告，而不是按参数：发布包里 src/ 本来就是 DEV off，
-    # 此时 --release 是空操作，照参数报会说错。
-    if b"local DEV = false" in payload:
-        print("build    : release (DEV off -- 只有关卡内数值，无诊断工具)")
-    else:
-        print("build    : dev (含存档进度项与诊断工具)")
 
     plan = [
         (os.path.join(save_dir, SHADOW_PATH), shadow),

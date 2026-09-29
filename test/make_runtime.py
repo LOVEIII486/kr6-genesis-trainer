@@ -2,9 +2,9 @@
 """
 从游戏自己的 exe 里裁出一个独立的 LÖVE 运行时（离线测试台）。
 
-    python tools/selftest/make_runtime.py
-    python tools/selftest/make_runtime.py --game-dir "D:\\...\\Kingdom Rush Genesis"
-    python tools/selftest/make_runtime.py --out ./_scratch/rt
+    python test/make_runtime.py
+    python test/make_runtime.py --game-dir "D:\\...\\Kingdom Rush Genesis"
+    python test/make_runtime.py --out ./_scratch/rt
 """
 import argparse
 import os
@@ -19,7 +19,7 @@ except Exception:
     pass
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
+ROOT = os.path.abspath(os.path.join(HERE, ".."))
 sys.path.insert(0, ROOT)
 
 from install import EXE_NAME, FusedArchive, find_game_dir  # noqa: E402
