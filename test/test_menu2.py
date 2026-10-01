@@ -621,16 +621,21 @@ def build_harness():
     # ---- 倍率只在本关生效：换关就归 1。同一关内**不许**动它，
     # 否则功能会在中途自己失效（静默）。
     w('  S.mult.enemy_hp = 2')
+    w('  S.speed.mult = 3')
     w('  S.last_level_check = 0  pcall(fake.update)')
     w('  say("mult_tag_set", S.mult_tag ~= nil)')
     w('  S.last_level_check = 0  pcall(fake.update)')
     w('  say("mult_same_level", S.mult.enemy_hp)')
+    w('  say("speed_same_level", S.speed.mult)')
+    w('  say("speed_field_same_level", _G.game.DBG_TIME_MULT)')
     # 换一关：关卡标识变了（真实存档里 store.level_name 就是关卡名）。
     # ⚠️ 别在这里换成另一张 store 表 —— 场上的实体挂在原表上，换表会让"场上的单位"
     # 那一趟无从下手，倍率残留在实体上污染后面的用例。
     w('  store.level_name = "level06"')
     w('  S.last_level_check = 0  pcall(fake.update)')
     w('  say("mult_after_level_change", S.mult.enemy_hp)')
+    w('  say("speed_after_level_change", S.speed.mult)')
+    w('  say("speed_field_after_level_change", _G.game.DBG_TIME_MULT)')
     w('  store.level_name = "level05"')
     w('  S.last_level_check = 0  pcall(fake.update)')
     # ---- 技能无CD：三个开关各自定位目标，且一个字都不许误伤
@@ -906,6 +911,38 @@ def build_harness():
     w('  S.tower.cd = 0.1')
     w('  for _ = 1, 30 do key("right") end')
     w('  say("lad_cd_max", S.tower.cd)')
+    # 整体速度：**专用档位表**（0.5/1/2/3/4）。>1 只能是整数 —— game:update 用的是数值 for
+    # （for i = 1, mult），表里若混进 1.5 会被当成 x1（静默失效），所以这行不共用 MULT_STEPS。
+    w('  pick("game_speed")')
+    w('  S.speed.mult = 1  key("right")')
+    w('  say("sp_r1", S.speed.mult)')
+    w('  key("right")')
+    w('  say("sp_r2", S.speed.mult)')
+    w('  key("right")')
+    w('  say("sp_r3", S.speed.mult)')
+    w('  key("right")')
+    w('  say("sp_r4", S.speed.mult)')
+    w('  key("left")')
+    w('  say("sp_l1", S.speed.mult)')
+    w('  for _ = 1, 9 do key("left") end')
+    w('  say("sp_floor", S.speed.mult)')
+    w('  for _ = 1, 30 do key("right") end')
+    w('  say("sp_ceil", S.speed.mult)')
+    # 真正生效的是**游戏自己的**字段；tick 每帧写一次（这里显式推一帧走真实路径）
+    w('  S.speed.mult = 4  S.speed_apply_fn()')
+    w('  say("sp_field", _G.game.DBG_TIME_MULT)')
+    w('  S.speed.mult = 0.5  S.speed_apply_fn()')
+    w('  say("sp_field_half", _G.game.DBG_TIME_MULT)')
+    w('  S.speed.mult = 2  pcall(fake.update)')
+    w('  say("sp_tick", _G.game.DBG_TIME_MULT)')
+    w('  S.speed.mult = 1  S.speed_apply_fn()')
+    w('  say("sp_field_one", _G.game.DBG_TIME_MULT)')
+    # 脏值（表外值 / 旧版本注入）一律退回 x1：0 或负数会让 simulation 的累加器永远
+    # 过不了线 —— 那是把游戏冻住，宁可退回原速。
+    w('  _G.game.DBG_TIME_MULT = 1.5')
+    w('  S.speed.mult = 1.5  S.speed_apply_fn()')
+    w('  say("sp_dirty", _G.game.DBG_TIME_MULT)')
+    w('  say("sp_dirty_state", S.speed.mult)')
     # ---- 滑条：点轨道设值；点**文字区**不改值
     w('  S.mult.enemy_hp = 1')
     w('  S.tower.cd = 1')
@@ -1334,6 +1371,15 @@ def main():
           "val=" + kv.get("mult_same_level", "?"))
     check(kv.get("mult_after_level_change") == "1", "换关后倍率自动归 1",
           "val=" + kv.get("mult_after_level_change", "?"))
+    check(kv.get("speed_same_level") == "3" and kv.get("speed_field_same_level") == "3",
+          "整体速度同一关内**不**被复位，且已经写进游戏字段",
+          "%s/%s" % (kv.get("speed_same_level", "?"),
+                     kv.get("speed_field_same_level", "?")))
+    check(kv.get("speed_after_level_change") == "1"
+          and kv.get("speed_field_after_level_change") == "1",
+          "整体速度同样只在本关生效：换关当帧归 x1 并写回游戏字段",
+          "%s/%s" % (kv.get("speed_after_level_change", "?"),
+                     kv.get("speed_field_after_level_change", "?")))
     # ---- 技能无CD（三个分开的开关；目标结构是探针实测的，不是猜的）
     check(kv.get("nocd_hero_ta_cd") == "0" and kv.get("nocd_hero_ta_ts") == "0",
           "英雄：timed_attacks 容器里的 cd / ts 清零",
@@ -1515,6 +1561,25 @@ def main():
           "x1 → x10 只要 10 下（原来加法步长 0.25 要 36 下）", kv.get("lad_ten", "?"))
     check(near(kv, "lad_cd_max", 1),
           "技能CD 封顶在 x1（越小越快，调到 10 没意义）", kv.get("lad_cd_max", "?"))
+    # ---- 整体速度：专用档位表 + 写进游戏自己的字段
+    check(near(kv, "sp_r1", 2) and near(kv, "sp_r2", 3) and near(kv, "sp_r3", 4)
+          and near(kv, "sp_r4", 4),
+          "整体速度往右逐档是 x2/x3/x4、到 x4 封顶（**整数**档 —— 非整数会被引擎当成 x1）",
+          "%s,%s,%s,%s" % (kv.get("sp_r1", "?"), kv.get("sp_r2", "?"),
+                           kv.get("sp_r3", "?"), kv.get("sp_r4", "?")))
+    check(near(kv, "sp_l1", 3) and near(kv, "sp_floor", 0.5),
+          "往左 x3、按到底停在慢放档 x0.5", "%s,%s" % (kv.get("sp_l1", "?"),
+                                                       kv.get("sp_floor", "?")))
+    check(near(kv, "sp_ceil", 4), "右按到底封顶在 x4（倍率表里没有 1.5 那种中间档）",
+          kv.get("sp_ceil", "?"))
+    check(near(kv, "sp_field", 4) and near(kv, "sp_field_half", 0.5)
+          and near(kv, "sp_tick", 2) and near(kv, "sp_field_one", 1),
+          "写的是游戏自己的 game.DBG_TIME_MULT（x4 / 慢放 x0.5 / 走 tick 那趟 / 回 x1）",
+          "%s,%s,%s,%s" % (kv.get("sp_field", "?"), kv.get("sp_field_half", "?"),
+                           kv.get("sp_tick", "?"), kv.get("sp_field_one", "?")))
+    check(near(kv, "sp_dirty", 1) and near(kv, "sp_dirty_state", 1),
+          "档位表外的脏值一律退回 x1（0 或负数会把游戏冻住，不能写进去）",
+          "%s,%s" % (kv.get("sp_dirty", "?"), kv.get("sp_dirty_state", "?")))
     # ---- 滑条
     check(kv.get("sld_has") == "true", "倍率行有滑条轨道")
     check(num(kv, "sld_trackw", -1) > 0, "轨道宽度为正",
@@ -1527,7 +1592,7 @@ def main():
     ids = kv.get("all_item_ids", "").split(",")
     # 精简版**应该**有的（金币/生命/无限金钱 + 敌人血量/移速 + 星星/升级树）
     for want in ("gold_add", "gold_sub", "lives_add", "lives_sub", "hold",
-                 "hold_lives", "gold_mult", "next_wave", "enemy_hp", "enemy_speed",
+                 "hold_lives", "gold_mult", "next_wave", "game_speed", "enemy_hp", "enemy_speed",
                  "tower_range",
                  "tower_damage", "tower_atkspd", "tower_skill_cd",
                  "hero_hp", "hero_damage", "hero_atkspd", "hero_skill_cd",

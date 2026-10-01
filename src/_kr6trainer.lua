@@ -64,6 +64,10 @@ end
 if type(S.gold) ~= "table" then S.gold = { mult = 1 } end
 if type(S.gold.mult) ~= "number" then S.gold.mult = 1 end
 if type(S.gold_base) ~= "table" then S.gold_base = {} end
+-- 整体速度。这里存的只是意图值，真正生效的是每帧写进**游戏自己的** game.DBG_TIME_MULT
+-- （见 speed_apply）—— 那个字段发行版里没人碰，而 game:update 每帧读它。
+if type(S.speed) ~= "table" then S.speed = { mult = 1 } end
+if type(S.speed.mult) ~= "number" then S.speed.mult = 1 end
 -- 防御塔的四项倍率（射程 / 攻速 / 伤害 / 技能CD），以及「每座塔已经乘上去的倍率」。
 -- 弱键：塔被拆或升级后表被回收，记录跟着释放，不会越攒越多。
 if type(S.tower) ~= "table" then S.tower = { range = 1, rate = 1, damage = 1, cd = 1 } end
@@ -229,31 +233,42 @@ local MULT_STEPS = {
   1.5, 2, 3, 4, 5, 6, 7, 8, 9, 10,
 }
 
+-- 「整体速度」**专用**的档位表，不能复用 MULT_STEPS：game:update 用的是数值 for
+-- （`for i = 1, mult`），非整数且 >1 只跑一轮 = x1 —— 表里那个 1.5 会静默失效。
+-- <1 走的是另一条分支（dt 缩放），是慢放。
+local SPEED_STEPS = { 0.5, 1, 2, 3, 4 }
+local SPEED_OK = { [0.5] = true, [1] = true, [2] = true, [3] = true, [4] = true }
+
+-- 行自己的档位表；没写就用通用那张。
+local function steps_of(a)
+  return (a and a.steps) or MULT_STEPS
+end
+
 -- 本行可用的档位下标区间（表是升序的，过滤掉范围外的之后仍是一段连续区间）
-local function ladder_range(lo, hi)
-  local i0, i1 = 1, #MULT_STEPS
-  if lo then while i0 <= #MULT_STEPS and MULT_STEPS[i0] < lo do i0 = i0 + 1 end end
-  if hi then while i1 >= 1 and MULT_STEPS[i1] > hi do i1 = i1 - 1 end end
+local function ladder_range(steps, lo, hi)
+  local i0, i1 = 1, #steps
+  if lo then while i0 <= #steps and steps[i0] < lo do i0 = i0 + 1 end end
+  if hi then while i1 >= 1 and steps[i1] > hi do i1 = i1 - 1 end end
   return i0, i1
 end
 
 -- cur 落在 [i0,i1] 里的第几档（不在表上就取最近的一档；相等时取靠下的那个）。
-local function ladder_nearest(cur, i0, i1)
+local function ladder_nearest(steps, cur, i0, i1)
   local idx, bestd = i0, nil
   for j = i0, i1 do
-    local d = math.abs(MULT_STEPS[j] - cur)
+    local d = math.abs(steps[j] - cur)
     if bestd == nil or d < bestd then bestd, idx = d, j end
   end
   return idx
 end
 
 -- 在档位表里移动 d 格。cur 不在表上时（旧版本注入留下的值）先吸附到最近的一档。
-local function ladder_move(cur, d, lo, hi)
-  local i0, i1 = ladder_range(lo, hi)
+local function ladder_move(steps, cur, d, lo, hi)
+  local i0, i1 = ladder_range(steps, lo, hi)
   if i1 < i0 then return cur end
-  local i = ladder_nearest(cur, i0, i1) + (d or 0)
+  local i = ladder_nearest(steps, cur, i0, i1) + (d or 0)
   if i < i0 then i = i0 elseif i > i1 then i = i1 end
-  return MULT_STEPS[i]
+  return steps[i]
 end
 
 local function action(id, arg)
@@ -286,6 +301,12 @@ local function action(id, arg)
     local r = "击杀金币 x" .. tostring(v) .. "（←→ 调整，最低 x1）"
     note(r, "kill gold x" .. tostring(v) .. " (left/right, min x1)")
     return r
+  elseif id == "game_speed" then
+    -- 同 gold_mult：可调行没有"执行"语义，给一个只读查询（冒烟测试会空参跑一遍全菜单）。
+    local v = S.speed.mult
+    local r = "游戏速度 x" .. tostring(v) .. "（←→ 调整）"
+    note(r, "game speed x" .. tostring(v) .. " (left/right)")
+    return r
   elseif id == "lives_sub" then
     local r = add_field("lives", -(tonumber(arg) or 10))
     note(r) return r
@@ -304,7 +325,7 @@ local function action(id, arg)
       -- 倍率行走**档位表**：arg.delta 是档位序号的增量（±1，见 menu_key），不是数值增量。
       -- 值只能取自表里，所以不会像加法步长那样漂（往下再往上回不到 1.0）。
       local cur = tonumber(arg.set[arg.key]) or 1
-      local v = ladder_move(cur, arg.delta, arg.min, arg.max)
+      local v = ladder_move(steps_of(arg), cur, arg.delta, arg.min, arg.max)
       if v == cur then
         return "OK: " .. tostring(arg.key) .. " at limit x" .. tostring(v)
       end
@@ -1786,6 +1807,7 @@ local MENU_TEXT = {
     hold = "无限金钱", hold_lives = "生命锁定",
     gold_mult = "击杀金币倍率",
     next_wave = "立刻下一波",
+    hdr_speed = "速度", game_speed = "游戏速度",
     hdr_res = "资源", hdr_wave = "波次", hdr_units = "敌人属性",
     hdr_tower = "防御塔",
     hdr_hero = "英雄",
@@ -1816,6 +1838,7 @@ local MENU_TEXT = {
     hold = "infinite gold", hold_lives = "lock lives",
     gold_mult = "kill gold mult",
     next_wave = "next wave now",
+    hdr_speed = "SPEED", game_speed = "game speed",
     hdr_res = "RESOURCES", hdr_wave = "WAVES", hdr_units = "ENEMY STATS",
     hdr_tower = "TOWERS",
     hdr_hero = "HEROES",
@@ -1888,6 +1911,14 @@ local function menu_items()
 
     { id = "hdr_wave",  label = L("hdr_wave"), header = true },
     { id = "next_wave", label = L("next_wave") },
+
+    -- 整体速度 = 游戏**自己**的时间倍率（game.DBG_TIME_MULT）：>1 时 game:update 一帧连跑
+    -- N 次 simulation，移动/伤害/波次/冷却/动画一起快；<1 是慢放。档位表是这行专用的
+    -- （见 SPEED_STEPS），换关复位见 tick。
+    { id = "hdr_speed", label = L("hdr_speed"), header = true },
+    { id = "game_speed", label = L("game_speed"),
+      adjust = { set = S.speed, key = "mult", steps = SPEED_STEPS },
+      value = function() return fmt_mult(S.speed.mult) end },
 
     -- 倍率行：左右键调 S.mult 那一项（不走 store，故 tweak 有第二种目标）；右=调高、左=调低。
     { id = "hdr_units", label = L("hdr_units"), header = true },
@@ -2023,13 +2054,14 @@ local EXTRA_LINES = 7
 -- ⚠️ 行高太矮时不摆滑条、也不响应轨道点击，自动退回纯 ←→（任何分辨率都不会挤成一团）。
 local SLIDER_MIN_H = 12
 
--- 这一行可用的档位下标区间；没有可调语义、或只剩一档时返回 nil。
+-- 这一行可用的档位下标区间 + 它的档位表；没有可调语义、或只剩一档时返回 nil。
 local function slider_span(it)
   if not (it and it.adjust and it.adjust.set and it.adjust.key) then return nil end
   local a = it.adjust
-  local i0, i1 = ladder_range(a.min, a.max)
+  local steps = steps_of(a)
+  local i0, i1 = ladder_range(steps, a.min, a.max)
   if i1 <= i0 then return nil end
-  return i0, i1
+  return i0, i1, steps
 end
 
 local function item_by_id(id)
@@ -2043,7 +2075,7 @@ end
 -- 按鼠标 x 设值（按下的那一刻 + 拖动期间每帧都调）。用的轨道几何是**上一帧**存的，布局稳定。
 local function slider_set_at(id, mxs)
   local it = item_by_id(id)
-  local i0, i1 = slider_span(it)
+  local i0, i1, steps = slider_span(it)
   if not i0 then return false end
   local tr = nil
   for i = 1, #S.rects do
@@ -2052,7 +2084,7 @@ local function slider_set_at(id, mxs)
   if not tr or tr.w <= 0 then return false end
   local frac = (mxs - tr.x) / tr.w
   if frac < 0 then frac = 0 elseif frac > 1 then frac = 1 end
-  local v = MULT_STEPS[i0 + math.floor(frac * (i1 - i0) + 0.5)]
+  local v = steps[i0 + math.floor(frac * (i1 - i0) + 0.5)]
   local a = it.adjust
   if a.set[a.key] ~= v then a.set[a.key] = v end
   return true
@@ -2200,8 +2232,8 @@ local function draw_menu()
         if track then
           -- 档位下标 → 轨道位置（线性）。当前值不在表上时吸附最近的一档，和 ←→ 一致。
           local a = items[i].adjust
-          local i0, i1 = slider_span(items[i])
-          local idx = ladder_nearest(tonumber(a.set[a.key]) or 1, i0, i1)
+          local i0, i1, steps = slider_span(items[i])
+          local idx = ladder_nearest(steps, tonumber(a.set[a.key]) or 1, i0, i1)
           local kx = track.x + ((idx - i0) / (i1 - i0)) * track.w
           local cy = y + line_h * 0.5
           love.graphics.setColor(55, 55, 55, 230)
@@ -2305,7 +2337,8 @@ local function menu_key(key)
       --   倍率行（set/key）→ delta 是**档位序号**的增量（±1），走档位表
       --   store 字段行（field）→ delta 才是数值增量（金币 ±1000 那种）
       if a.set then
-        run_action("tweak", { set = a.set, key = a.key, min = a.min, max = a.max, delta = dir })
+        run_action("tweak", { set = a.set, key = a.key, min = a.min, max = a.max,
+                              steps = a.steps, delta = dir })
       else
         run_action("tweak", { field = a.field, delta = a.step * a.sign * dir })
       end
@@ -2340,6 +2373,20 @@ local function hero_level_str(before, after)
   return "lvl " .. tostring(l1) .. "->" .. tostring(l2)
 end
 
+-- 整体速度：把意图值写进**游戏自己的** game.DBG_TIME_MULT（>1 一帧连跑 N 次 simulation:update，
+-- <1 走 dt 缩放）。不装钩子、不碰 store，所以没有任何"游戏会重算它"的问题 —— 每帧幂等写一次
+-- 只是防脏值与被外力改掉。SPEED_OK 之外的值一律当 x1：0 或负数会让 simulation 的累加器
+-- 永远过不了线（游戏直接冻住），宁可退回原速。
+local function speed_apply()
+  local g = _G.game
+  if type(g) ~= "table" then return "n/a: no game table" end
+  local v = S.speed.mult
+  if not SPEED_OK[v] then v = 1 S.speed.mult = 1 end
+  if rawget(g, "DBG_TIME_MULT") ~= v then g.DBG_TIME_MULT = v end
+  return "OK: speed x" .. tostring(v)
+end
+S.speed_apply_fn = speed_apply   -- 暴露给测试台（写的是 _G.game.DBG_TIME_MULT）
+
 -- frame tick
 local function tick(source)
   if S.tick_source == nil then
@@ -2365,6 +2412,7 @@ local function tick(source)
     if tag then
       if S.mult_tag and S.mult_tag ~= tag then
         S.mult.enemy_hp, S.mult.enemy_speed = 1, 1
+        S.speed.mult = 1     -- 整体速度同理：只在本关生效
       end
       S.mult_tag = tag
     end
@@ -2389,6 +2437,10 @@ local function tick(source)
       end
     end
   end
+
+  -- 整体速度：每帧幂等写一次（值没变就只是一个字段比较）。放在上面那段换关复位**之后**，
+  -- 复位当帧就能生效。不在关卡里（没有 game 表）时什么也不做。
+  pcall(speed_apply)
 
   if S.hold or S.hold_lives then
     pcall(function()
