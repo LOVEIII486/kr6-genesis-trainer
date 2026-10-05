@@ -7,12 +7,26 @@ kr6-trainer　使用说明
 一、安装
 ────────────────────────────────────────────────────────
 
+【Windows】
+
 把整个文件夹解压到游戏的安装目录，也就是和 「Kingdom Rush Genesis.exe」
 放在同一层。（Steam 里可以右键游戏 → 管理 → 浏览本地文件，就能打开这个目录。）
 
 然后双击 install.bat，等它跑完。看到「安装完成」就行了。
 
 想要卸载：双击 uninstall.bat。
+
+【macOS】
+
+Steam 里右键游戏 → 管理 → 浏览本地文件。把整个文件夹解压到打开的目录
+（也就是 Kingdom Rush Genesis.app 所在的那一层）。
+
+然后双击 Install.command。（如果第一次双击提示"无法打开"，在终端里跑一次
+`python3 install.py` 也一样 —— 全自动找游戏。）
+
+想要卸载：双击 Uninstall.command，或 `python3 uninstall.py`。
+
+（macOS 的安装不会修改游戏本体任何文件，模组装在存档目录。）
 
 
 二、游戏里的菜单
@@ -76,9 +90,11 @@ kr6-trainer　使用说明
 
 存档目录在：
 
-  %APPDATA%\kingdom_rush_genesis
+  %APPDATA%\kingdom_rush_genesis        （Windows）
 
-（在文件管理器的地址栏粘贴这一行就能打开。）
+（macOS 是在 Finder 按 ⌘⇧G 粘贴这一行打开：）
+
+  ~/Library/Application Support/kingdom_rush_genesis
 
 「存档」那一组和英雄升级会改动存档进度，而且这个目录会被 Steam 云同步。
 用之前先把整个 kingdom_rush_genesis 文件夹复制一份留底。

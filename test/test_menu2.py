@@ -30,8 +30,43 @@ FKEYS = tuple("f%d" % i for i in range(1, 13))
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, ".."))
 RT = os.path.join(ROOT, "_scratch", "rt")
-MIRROR = os.path.join(os.environ["APPDATA"], "krmirror")
-LOVE_SAVE = os.path.join(os.environ["APPDATA"], "LOVE", "krmirror")
+
+
+# 存档目录 base：Windows %APPDATA% / macOS ~/Library/Application Support。
+# payload 现在的 save_dir() 优先用 love.filesystem.getSaveDirectory() —— 测试台跑的是
+# 假 bundle（identity=krmirror），macOS 落在 ~/Library/Application Support/krmirror，
+# Windows 非 bundle 落在 %APPDATA%\LOVE\krmirror。测试台把「镜像 payload 放哪」和
+# 「love 实际往哪写」统一成同一个目录（之前 Windows 上两者分居 %APPDATA%\krmirror 与
+# %APPDATA%\LOVE\krmirror，是 payload 硬编码 identity 时代的遗留）。
+def save_base():
+    if sys.platform == "darwin":
+        return os.path.join(os.environ["HOME"], "Library", "Application Support")
+    return os.environ["APPDATA"]
+
+
+MIRROR = os.path.join(save_base(), "" if sys.platform == "darwin" else "LOVE", "krmirror")
+LOVE_SAVE = MIRROR
+
+
+# macOS 运行时只搭假 bundle（make_runtime 不拷贝游戏本体），Windows 是 love.exe
+def love_binary():
+    p = os.path.join(RT, "love_path.txt")
+    if os.path.isfile(p):
+        return open(p).read().strip()
+    return os.path.join(RT, "love.exe")
+
+
+def deploy_game_love(love_file):
+    """macOS bundle 形态：把测试台 .love 复制成假 bundle 的 Contents/Resources/game.love。
+    Windows 直接传 .love 参数即可。"""
+    if sys.platform != "darwin":
+        return love_file
+    love = love_binary()
+    # love = <...>/bundle.app/Contents/MacOS/love → bundle 根在往上剥三层
+    dst = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(love))),
+                       "Contents", "Resources", "game.love")
+    shutil.copyfile(love_file, dst)
+    return dst
 
 FAILURES = []
 
@@ -79,7 +114,7 @@ def build_harness():
     L = []
     w = L.append
     w('local frames, log, fake = 0, {}, nil')
-    w('local M = os.getenv("APPDATA") .. "/krmirror/"')
+    w('local M = love.filesystem.getSaveDirectory() .. "/"')
     w('local function flush()')
     w('  local f = io.open(M .. "_selftest_log.txt", "w")')
     w('  f:write(table.concat(log, string.char(10)) .. string.char(10)) f:close()')
@@ -1030,8 +1065,13 @@ def build_harness():
 
 
 def run_and_read():
-    subprocess.run([os.path.join(RT, "love.exe"), os.path.join(RT, "selftest.love")],
-                   cwd=RT, timeout=60)
+    love = love_binary()
+    selftest = os.path.join(RT, "selftest.love")
+    if sys.platform == "darwin":
+        deploy_game_love(selftest)
+        subprocess.run([love], cwd=RT, timeout=60)
+    else:
+        subprocess.run([love, selftest], cwd=RT, timeout=60)
     logpath = os.path.join(MIRROR, "_selftest_log.txt")
     if not os.path.isfile(logpath):
         return None
@@ -1077,7 +1117,7 @@ def check_footer_text():
 
 
 def main():
-    if not os.path.isfile(os.path.join(RT, "love.exe")):
+    if not os.path.isfile(love_binary()):
         print("运行时缺失，先裁一个...")
         subprocess.run([sys.executable, os.path.join(HERE, "make_runtime.py")], check=True)
         print()

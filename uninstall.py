@@ -46,6 +46,12 @@ PROTECTED = ("cache.lua", "global.lua", "settings.lua", "steam_autocloud.vdf")
 
 
 def default_save_dir(identity):
+    # 与 install.py 同一套规则：Windows 走 %APPDATA%，macOS 走 ~/Library/Application Support
+    if sys.platform == "darwin":
+        home = os.environ.get("HOME")
+        if not home:
+            sys.exit("error: HOME is not set; pass --save-dir explicitly")
+        return os.path.join(home, "Library", "Application Support", identity)
     appdata = os.environ.get("APPDATA")
     if not appdata:
         sys.exit("error: APPDATA is not set; pass --save-dir explicitly")

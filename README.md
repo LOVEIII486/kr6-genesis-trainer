@@ -6,15 +6,16 @@ Kingdom Rush Genesis 的游戏内修改器。
 
 **[→ 点这里下载最新版本](https://github.com/LOVEIII486/kr6-genesis-trainer/releases/latest)**
 
-下载 `kr6-trainer-*-release.zip` 那个（推荐，不需要 Python）。装法见下面「安装」。
+Windows 下载 `kr6-trainer-*-release.zip`、macOS 下载 `kr6-trainer-*-mac.zip`
+（推荐，不需要额外装 Python）。装法见下面「安装」。
 
 > **完全免费。** 作者：B站 **LOVEIII486**。只在 B站和 GitHub 发布，从未授权任何人售卖 ——
 > **如果你花钱买到了它，说明你被骗了。**
 
 ## 环境需求
 
-- Windows
-- **可选**：Python 3（用安装脚本时需要；纯标准库，无第三方依赖）
+- Windows **或** macOS（游戏在两个平台上都有 Steam 版）
+- **可选**：Python 3（用命令行安装脚本时需要；纯标准库，无第三方依赖）
 
 ## 能改什么
 
@@ -43,6 +44,21 @@ kr6-trainer\
 > **关于 `install.bat` 里的 `-ExecutionPolicy Bypass`**：默认 Windows 禁止运行
 > PowerShell 脚本，不加这个标志双击会报"禁止运行脚本"。它**只对这一次调用生效**，
 > 不改系统设置。`install.ps1` 是纯文本，可以直接读。
+
+### macOS
+
+下载 **`kr6-trainer-*-mac.zip`**，解压到**游戏安装目录**
+（`Steam → 库 → 右键 Kingdom Rush 6: Genesis → 管理 → 浏览本地文件`，
+macOS 上打开的是 `Kingdom Rush Genesis.app` 所在的目录）。然后：
+
+- **双击 `Install.command`**（如果第一次双击提示"无法打开"，在终端里跑一次
+  `python3 install.py` 即可，同样是全自动找游戏），或者
+- 在终端里 `cd` 到解压目录跑 `python3 install.py`
+
+卸载：双击 `Uninstall.command`，或 `python3 uninstall.py`。
+
+macOS 的模组文件装在存档目录（**不会改游戏本身**）：
+`~/Library/Application Support/kingdom_rush_genesis/`（Steam 云同步的也是这里）。
 
 ### 方式二：装了 Python 的话
 
