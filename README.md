@@ -77,14 +77,17 @@ python install.py --dry-run
 
 ### ⚠️ 游戏更新之后要重装一次
 
-**游戏一更新，请重新跑一次安装**（双击 `install.bat`，或 `python install.py`），别的什么都不用做。
+**游戏一更新，请重新跑一次安装**，别的什么都不用做：
 
-安装时要从游戏 exe 里取一份它的原始代码配合加载，那份代码**跟游戏版本绑死**：
+- Windows：双击 `install.bat`（或 `python install.py`）
+- macOS：双击 `Install.command`（或 `python3 install.py`）
+
+安装时要从游戏里取一份它的原始代码配合加载，那份代码**跟游戏版本绑死**：
 游戏更新后就配不上了，启动时会直接报错（蓝色报错页 / 游戏打不开）。
 重装一次即可，**存档和设置都不受影响**。
 
-如果重装后仍然起不来：先跑 `uninstall.bat` 卸载（游戏即可正常启动），
-再到 Issues 里反馈。
+如果重装后仍然起不来：先卸载（Windows `uninstall.bat` / macOS `Uninstall.command`），
+游戏即可正常启动，再到 Issues 里反馈。
 
 ## 游戏内操作
 
@@ -107,8 +110,8 @@ python install.py --dry-run
 
 ## 卸载
 
-- 便携版：双击 `uninstall.bat`
-- 装了 Python：`python uninstall.py`
+- Windows：双击 `uninstall.bat`（装了 Python 也可以 `python uninstall.py`）
+- macOS：双击 `Uninstall.command`（或 `python3 uninstall.py`）
 
 游戏自己的存档不会被碰；改存档时自动留下的备份（`_kr6_slot_backup_*.lua`）也会**保留**
 ——想还原就把对应的那个文件复制成 `slot_1.lua`。
