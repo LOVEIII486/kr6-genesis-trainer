@@ -4,8 +4,23 @@
 -- —— 游戏跑的还是它自己的代码。
 -- ⚠️ 只覆盖走正常 require 的模块；游戏用沙箱环境（level_utils.eval_file + setfenv）加载的
 -- 绝不碰 —— 那些环境里没有 string/io。
-local SEP = string.char(92)
-local SAVE = os.getenv("APPDATA") .. SEP .. "kingdom_rush_genesis" .. SEP
+-- 存档目录：优先问 LÖVE 自己（跨平台，不怕身份名 / 路径分隔符猜错）；
+-- 兜底按平台读环境变量（Windows %APPDATA% / macOS ~/Library/Application Support）。
+local function save_dir()
+  local lfs = (type(love) == "table") and love.filesystem
+  if lfs and lfs.getSaveDirectory then
+    local ok, d = pcall(lfs.getSaveDirectory)
+    if ok and type(d) == "string" and d ~= "" then
+      return (d:gsub("/+$", "")) .. "/"
+    end
+  end
+  local base = os.getenv("APPDATA")
+  if not base and os.getenv("HOME") then
+    base = os.getenv("HOME") .. "/Library/Application Support"
+  end
+  return base .. "/kingdom_rush_genesis/"
+end
+local SAVE = save_dir()
 
 local function wf(name, txt)
   local f = io.open(SAVE .. name, "wb")
@@ -24,7 +39,7 @@ end
 
 -- 先跑游戏自己的字节码，拿回真正的模块表
 local origval
-local chunk, cerr = blob(SAVE .. "_orig" .. SEP .. "all_director.luac")
+local chunk, cerr = blob(SAVE .. "_orig/all_director.luac")
 if not chunk then
   wf("_kr6_shadow_err_all_director_lua.txt", "blob failed: " .. tostring(cerr) .. string.char(10))
 else

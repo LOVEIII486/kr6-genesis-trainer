@@ -5,9 +5,22 @@
 --
 local virt, mod = ...
 
-local SEP = string.char(92)
+-- 存档目录：优先问 LÖVE 自己（跨平台，不怕身份名 / 路径分隔符猜错）；
+-- 兜底按平台读环境变量（Windows %APPDATA% / macOS ~/Library/Application Support）。
+-- 之前硬编码 %APPDATA% + 反斜杠，Windows 以外直接断；现在两个平台走同一条路。
 local function save_dir()
-  return (os.getenv("APPDATA") or ".") .. SEP .. "kingdom_rush_genesis" .. SEP
+  local lfs = (type(love) == "table") and love.filesystem
+  if lfs and lfs.getSaveDirectory then
+    local ok, d = pcall(lfs.getSaveDirectory)
+    if ok and type(d) == "string" and d ~= "" then
+      return (d:gsub("/+$", "")) .. "/"
+    end
+  end
+  local base = os.getenv("APPDATA")
+  if not base and os.getenv("HOME") then
+    base = os.getenv("HOME") .. "/Library/Application Support"
+  end
+  return base .. "/kingdom_rush_genesis/"
 end
 
 local function wf(name, txt)

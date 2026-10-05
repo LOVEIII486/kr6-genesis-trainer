@@ -8,6 +8,7 @@
 import argparse
 import io
 import os
+import shutil
 import subprocess
 import sys
 import zipfile
@@ -24,18 +25,49 @@ ROOT = os.path.abspath(os.path.join(HERE, ".."))
 RT = os.path.join(ROOT, "_scratch", "rt")
 SOURCES = ["src/_kr6trainer.lua", "src/shadow_director.lua"]
 
+# macOS 用 love_path.txt（make_runtime 只搭假 bundle 不拷贝游戏本体）。
+def love_binary():
+    p = os.path.join(RT, "love_path.txt")
+    if os.path.isfile(p):
+        return open(p).read().strip()
+    return os.path.join(RT, "love.exe")
+
+
+# 存档目录：Windows 非 bundle 是 %APPDATA%\LOVE\<id>；macOS 的假 bundle 是
+# ~/Library/Application Support\<id>（bundle 形态不带 LOVE 段）。
+def love_save_dir(identity):
+    if sys.platform == "darwin":
+        base = os.path.join(os.environ["HOME"], "Library", "Application Support")
+        return os.path.join(base, identity)
+    return os.path.join(os.environ["APPDATA"], "LOVE", identity)
+
+
+def deploy_game_love(love_file):
+    """macOS bundle 形态：把自己的 .love 复制成假 bundle 的 Contents/Resources/game.love。
+    Windows 直接传 .love 参数即可。"""
+    if sys.platform != "darwin":
+        return love_file
+    love = love_binary()
+    # love = <...>/bundle.app/Contents/MacOS/love → bundle 根在往上剥三层
+    dst = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(love))),
+                       "Contents", "Resources", "game.love")
+    shutil.copyfile(love_file, dst)
+    return dst
+
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     ap.add_argument("--game-dir")
     args = ap.parse_args()
 
-    if not os.path.isfile(os.path.join(RT, "love.exe")):
+    love = love_binary()
+    if not os.path.isfile(love):
         print("runtime missing, building it first...")
         cmd = [sys.executable, os.path.join(HERE, "make_runtime.py")]
         if args.game_dir:
             cmd += ["--game-dir", args.game_dir]
         subprocess.run(cmd, check=True)
+        love = love_binary()
         print()
 
     syn = os.path.join(RT, "syn")
@@ -69,19 +101,25 @@ def main():
         "  t.modules.window = false" + NL +
         "end" + NL)
 
-    love = os.path.join(RT, "syntax.love")
-    with zipfile.ZipFile(love, "w", zipfile.ZIP_DEFLATED) as z:
+    game_love = os.path.join(RT, "syntax.love")
+    with zipfile.ZipFile(game_love, "w", zipfile.ZIP_DEFLATED) as z:
         for fn in ("conf.lua", "main.lua"):
             z.write(os.path.join(syn, fn), fn)
 
-    # 非 fused 的 .love，存档目录是 %APPDATA%\LOVE\<identity>
-    save = os.path.join(os.environ["APPDATA"], "LOVE", "krsyntax")
+    # 非 fused 的 .love，存档目录在 <LOVE>\<identity>（截图落在这里）。
+    save = love_save_dir("krsyntax")
     os.makedirs(save, exist_ok=True)
     result = os.path.join(save, "syntax_result.txt")
     if os.path.isfile(result):
         os.remove(result)
 
-    subprocess.run([os.path.join(RT, "love.exe"), love], cwd=RT, timeout=60)
+    if sys.platform == "darwin":
+        # 假 bundle：love 自己会读 Contents/Resources/game.love，不能把 .love 当参数传
+        # （会跟 bundle 路径互相打架）
+        deploy_game_love(game_love)
+        subprocess.run([love], cwd=RT, timeout=60)
+    else:
+        subprocess.run([love, game_love], cwd=RT, timeout=60)
 
     if not os.path.isfile(result):
         print("no result produced -- the runtime did not start")
