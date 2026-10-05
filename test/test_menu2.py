@@ -978,6 +978,21 @@ def build_harness():
     w('  S.speed.mult = 1.5  S.speed_apply_fn()')
     w('  say("sp_dirty", _G.game.DBG_TIME_MULT)')
     w('  say("sp_dirty_state", S.speed.mult)')
+    # ---- 存档目录（v13 修的 ANSI/UTF-8 路径问题）
+    # 这台机器是 UTF-8 代码页，复现不了"中文用户名 + GBK"那个 case；能钉住的是不变量：
+    #   ① 选出来的目录**一定能写**（探针通过才会被选中）
+    #   ② 纯 ASCII 路径不会被转码改动（转码只在 Windows 上做，非 Windows 返回 nil）
+    #   ③ 非 ASCII 路径的转码不报错、类型正确（FFI 那条路真的跑通了）
+    w('  local sd = S.save_dir_fn()')
+    w('  local pf = io.open(sd .. "_kr6_probe_test.tmp", "wb")')
+    w('  say("sd_writable", pf ~= nil)')
+    w('  if pf then pf:close() os.remove(sd .. "_kr6_probe_test.tmp") end')
+    w('  say("sd_stable", S.save_dir_fn() == sd)')
+    w('  local ascii = "C:/ascii/only/path/"')
+    w('  local ap = S.ansi_path_fn(ascii)')
+    w('  say("ansi_ascii_same", ap == nil or ap == ascii)')
+    w('  local ap2 = S.ansi_path_fn("C:/测试/路径/")')
+    w('  say("ansi_nonascii_type", type(ap2))')
     # ---- 滑条：点轨道设值；点**文字区**不改值
     w('  S.mult.enemy_hp = 1')
     w('  S.tower.cd = 1')
@@ -1620,6 +1635,15 @@ def main():
     check(near(kv, "sp_dirty", 1) and near(kv, "sp_dirty_state", 1),
           "档位表外的脏值一律退回 x1（0 或负数会把游戏冻住，不能写进去）",
           "%s,%s" % (kv.get("sp_dirty", "?"), kv.get("sp_dirty_state", "?")))
+    # ---- 存档目录（v13：ANSI/UTF-8 路径）
+    check(kv.get("sd_writable") == "true",
+          "选出来的存档目录一定可写（探针不通过就不会被选中）", kv.get("sd_writable", "?"))
+    check(kv.get("sd_stable") == "true", "存档目录只算一次（结果稳定）",
+          kv.get("sd_stable", "?"))
+    check(kv.get("ansi_ascii_same") == "true",
+          "纯 ASCII 路径转码后原样不变", kv.get("ansi_ascii_same", "?"))
+    _t = kv.get("ansi_nonascii_type", "?")
+    check(_t in ("string", "nil"), "非 ASCII 路径转码不报错（Windows 上应返回 string）", _t)
     # ---- 滑条
     check(kv.get("sld_has") == "true", "倍率行有滑条轨道")
     check(num(kv, "sld_trackw", -1) > 0, "轨道宽度为正",

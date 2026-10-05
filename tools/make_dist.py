@@ -103,7 +103,7 @@ def release_build(z, n, platform):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    ap.add_argument("--version", default="12", help="发版号（**发新版时记得改这里**，"
+    ap.add_argument("--version", default="13", help="发版号（**发新版时记得改这里**，"
                     "否则会静默覆盖上一版的同名文件）")
     ap.add_argument("--platform", choices=("win", "windows", "mac", "macos"), default="win",
                     help="哪个平台的发行包（默认 %(default)s）")
