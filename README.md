@@ -6,7 +6,7 @@ Kingdom Rush Genesis 的游戏内修改器。
 
 **[→ 点这里下载最新版本](https://github.com/LOVEIII486/kr6-genesis-trainer/releases/latest)**
 
-Windows 下载 `kr6-trainer-*-release.zip`、macOS 下载 `kr6-trainer-*-mac.zip`
+Windows 下载 `kr6-trainer-*-windows.zip`、macOS 下载 `kr6-trainer-*-macos.zip`
 （推荐，不需要额外装 Python）。装法见下面「安装」。
 
 > **完全免费。** 作者：B站 **LOVEIII486**。只在 B站和 GitHub 发布，从未授权任何人售卖 ——
@@ -25,7 +25,7 @@ Windows 下载 `kr6-trainer-*-release.zip`、macOS 下载 `kr6-trainer-*-mac.zip
 
 ### 方式一：双击安装（推荐，不需要 Python）
 
-下载 **`kr6-trainer-*-release.zip`**，解压到**游戏安装目录**
+下载 **`kr6-trainer-*-windows.zip`**，解压到**游戏安装目录**
 （和 `Kingdom Rush Genesis.exe` 同一层），然后**双击 `install.bat`**。
 卸载是双击 `uninstall.bat`。
 
@@ -47,7 +47,7 @@ kr6-trainer\
 
 ### macOS
 
-下载 **`kr6-trainer-*-mac.zip`**，解压到**游戏安装目录**
+下载 **`kr6-trainer-*-macos.zip`**，解压到**游戏安装目录**
 （`Steam → 库 → 右键 Kingdom Rush 6: Genesis → 管理 → 浏览本地文件`，
 macOS 上打开的是 `Kingdom Rush Genesis.app` 所在的目录）。然后：
 

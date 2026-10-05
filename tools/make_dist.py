@@ -2,8 +2,8 @@
 """
 打包。
 
-    python tools/make_dist.py                    # Windows 发行版 -> dist/kr6-trainer-v<N>-release.zip
-    python tools/make_dist.py --platform mac     # macOS 发行版  -> dist/kr6-trainer-v<N>-mac.zip
+    python tools/make_dist.py                    # Windows 发行版 -> dist/kr6-trainer-v<N>-windows.zip
+    python tools/make_dist.py --platform mac     # macOS 发行版  -> dist/kr6-trainer-v<N>-macos.zip
     python tools/make_dist.py --dev              # 全源码快照（自用备份，不发布）
 """
 import argparse
@@ -105,18 +105,20 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     ap.add_argument("--version", default="12", help="发版号（**发新版时记得改这里**，"
                     "否则会静默覆盖上一版的同名文件）")
-    ap.add_argument("--platform", choices=("win", "mac"), default="win",
+    ap.add_argument("--platform", choices=("win", "windows", "mac", "macos"), default="win",
                     help="哪个平台的发行包（默认 %(default)s）")
     ap.add_argument("--dev", action="store_true",
                     help="full source snapshot instead of the release build")
     args = ap.parse_args()
 
+    # 文件名带平台：双平台之后 "-release" 这种叫法已经说不清是哪个包了
+    platform = "mac" if args.platform.startswith("mac") else "win"
     dist = os.path.join(ROOT, "dist")
     os.makedirs(dist, exist_ok=True)
     if args.dev:
-        kind, suffix, platform = "dev", "-dev", "win"
+        kind, suffix = "dev", "-dev"
     else:
-        kind, suffix = "release", ("-mac" if args.platform == "mac" else "-release")
+        kind, suffix = "release", ("-macos" if platform == "mac" else "-windows")
     out = os.path.join(dist, "kr6-trainer-v%s%s.zip" % (args.version, suffix))
 
     n = 0
@@ -124,13 +126,13 @@ def main():
         if args.dev:
             n = dev_build(z, n)
         else:
-            n = release_build(z, n, args.platform)
+            n = release_build(z, n, platform)
 
     print("wrote %s (%s build)" % (out, kind))
     print("  %d files, %.1f KB" % (n, os.path.getsize(out) / 1024.0))
     print("  docs/ 未包含（本地逆向资料，要备份请另行打包）")
     if not args.dev:
-        if args.platform == "mac":
+        if platform == "mac":
             print("  整包解压到游戏目录，双击 Install.command —— 需要 macOS 自带的 python3")
         else:
             print("  整包解压到游戏根目录，双击 install.bat —— 不需要 Python、不需要 7-Zip")
