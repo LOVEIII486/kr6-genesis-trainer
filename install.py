@@ -58,6 +58,32 @@ class NotFusedError(Exception):
     pass
 
 
+# 2026-10-30 的更新换了打包：exe 只剩一个 145KB 启动器，游戏数据挪到同目录的
+# main.kra（普通 zip，4700+ 条目）。老版本仍然是 fused exe，两种结构都要认。
+KRA_NAME = "main.kra"
+
+
+class KraArchive:
+    """main.kra 的读取器，接口与 FusedArchive 一致（read/close/entries/size/delta）。"""
+
+    def __init__(self, path):
+        self.path = path
+        self.size = os.path.getsize(path)
+        self.delta = 0
+        self.z = zipfile.ZipFile(path)
+        self.entries = {
+            i.filename: dict(usz=i.file_size, csz=i.compress_size, crc=i.CRC,
+                             meth=0, lho=0)
+            for i in self.z.infolist()
+        }
+
+    def read(self, name):
+        return self.z.read(name)
+
+    def close(self):
+        self.z.close()
+
+
 class FusedArchive:
     """Reads files out of the zip payload appended to a fused LOVE executable."""
 
@@ -213,22 +239,60 @@ def default_save_dir(identity):
     return os.path.join(appdata, identity)
 
 
+def open_game_archive(game_dir):
+    """打开装着游戏数据的那份归档：老版本是 fused exe，新版本是 main.kra。
+
+    挑「真的含 TARGET_MODULE」的那一个 —— 新版 exe 可能自带一个很小的 zip，
+    只看"是不是 zip"会挑错。返回 (archive, path)。"""
+    cands = [(os.path.join(game_dir, EXE_NAME), FusedArchive),
+             (os.path.join(game_dir, KRA_NAME), KraArchive)]
+    first = None
+    for path, make in cands:
+        if not os.path.isfile(path):
+            continue
+        try:
+            ar = make(path)
+        except NotFusedError:
+            continue
+        if TARGET_MODULE in ar.entries:
+            return ar, path
+        if first is None:
+            first = (ar, path)
+        else:
+            ar.close()
+    if first:
+        return first
+    sys.exit("error: 在 %s 里找不到游戏数据（既不是旧版的 fused exe，也没有 %s）"
+             "——游戏又改打包了？请截图游戏目录发给作者。" % (game_dir, KRA_NAME))
+
+
 def load_target_module(game_dir):
     """从游戏里取出 TARGET_MODULE 的原始字节码（平台各自的来源）。"""
     if IS_MAC:
-        love = os.path.join(game_dir, MAC_APP, *MAC_LOVE)
-        if not os.path.isfile(love):
-            sys.exit("error: %s not found" % love)
-        with zipfile.ZipFile(love) as z:
-            blob = z.read(TARGET_MODULE)
-        return blob, love
-    exe = os.path.join(game_dir, EXE_NAME)
-    ar = FusedArchive(exe)
+        base = os.path.join(game_dir, MAC_APP)
+        # 正常是 bundle 里的 game.love；2026-10-30 起 Windows 版改成了启动器 + main.kra，
+        # mac 版可能一起改（没拿到 mac 新包，先按几个常见位置兜底找）。
+        cands = [os.path.join(base, *MAC_LOVE)]
+        for rel in (("Contents", "Resources", KRA_NAME),
+                    ("Contents", "MacOS", KRA_NAME),
+                    (KRA_NAME,)):
+            cands.append(os.path.join(base, *rel))
+        for p in cands:
+            if not os.path.isfile(p):
+                continue
+            try:
+                with zipfile.ZipFile(p) as z:
+                    return z.read(TARGET_MODULE), p
+            except KeyError:
+                continue
+        sys.exit("error: 在 %s 里找不到游戏数据（game.love / main.kra）——"
+                 "mac 版也可能改了打包，请把 .app 的目录结构发给作者。" % base)
+    ar, src = open_game_archive(game_dir)
     try:
         blob = ar.read(TARGET_MODULE)
     finally:
         ar.close()
-    return blob, exe
+    return blob, src
 
 
 def write(path, data):

@@ -15,6 +15,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $ExeName   = 'Kingdom Rush Genesis.exe'
+$KraName   = 'main.kra'                # 2026-10-30 起游戏数据挪到了这个包（普通 zip）
 $GameName  = 'Kingdom Rush Genesis'   # 游戏文件夹名（Steam 库里就是这个名字）
 $Identity  = 'kingdom_rush_genesis'
 $Target    = 'all/director.lua'      # 要被顶掉的那个模块（游戏自己的代码）
@@ -52,7 +53,7 @@ function Get-ZipEntry([string]$exe, [string]$wanted) {
             if ($tail[$i] -eq 0x50 -and $tail[$i + 1] -eq 0x4B -and
                 $tail[$i + 2] -eq 0x05 -and $tail[$i + 3] -eq 0x06) { $eocd = $i; break }
         }
-        if ($eocd -lt 0) { Fail '在这个 exe 里找不到 zip 结束记录 —— 游戏版本不对？' }
+        if ($eocd -lt 0) { return $null }   # 不是 zip（新版 exe 只是启动器）→ 交给调用方换一个来源
 
         $count   = [BitConverter]::ToUInt16($tail, $eocd + 10)
         $cdSize  = [BitConverter]::ToUInt32($tail, $eocd + 12)
@@ -101,7 +102,7 @@ function Get-ZipEntry([string]$exe, [string]$wanted) {
             }
             $p += 46 + $nlen + $elen + $clen
         }
-        Fail "游戏里找不到 $wanted"
+        return $null   # 这个 zip 里没有目标模块 → 交给调用方换一个来源
     } finally {
         $fs.Dispose()
     }
@@ -131,12 +132,15 @@ if (-not $game) {
 if (-not $game) {
     # 猜路径兜底。⚠️ 刻意**不做** Steam 库发现（读注册表键 + 解析库配置文件）：那组特征与
     # Steam 盗号木马逐字重合，会被杀软启发式误报（理由见 docs/HANDOFF.md，别加回来）。
+    # ⚠️ 每项都要单独加括号：PowerShell 里逗号的优先级**高于** `+`，
+    # 写成 `@('a' + $x, 'b' + $y)` 会被拼成**一个**字符串，整个兜底列表形同虚设
+    # （这个坑从 v1 起就在，2026-10-30 才查出来）。
     $cands = @(
-        'C:\Program Files (x86)\Steam\steamapps\common\' + $GameName,
-        'C:\Program Files\Steam\steamapps\common\' + $GameName,
-        'D:\Steam\steamapps\common\' + $GameName,
-        'D:\Game\Steam\steamapps\common\' + $GameName,
-        'E:\Steam\steamapps\common\' + $GameName
+        ('C:\Program Files (x86)\Steam\steamapps\common\' + $GameName),
+        ('C:\Program Files\Steam\steamapps\common\' + $GameName),
+        ('D:\Steam\steamapps\common\' + $GameName),
+        ('D:\Game\Steam\steamapps\common\' + $GameName),
+        ('E:\Steam\steamapps\common\' + $GameName)
     )
     foreach ($d in $cands) {
         # 用字符串拼接而**不是** Join-Path：Join-Path 会解析盘符，玩家机器上
@@ -169,13 +173,24 @@ foreach ($f in @($payloadSrc, $shadowSrc)) {
 
 Say "游戏目录：$game"
 Say "存档目录：$save"
-Say "正在从游戏自己的 exe 里取出 $Target ..."
+Say "正在从游戏自己的文件里取出 $Target ..."
 
+# 老版本：数据追加在 exe 尾部（fused）。2026-10-30 起：exe 只是启动器，
+# 数据在同目录的 main.kra（普通 zip）。两个都试，哪个含目标模块用哪个。
+$kra  = $game.TrimEnd('\') + '\' + $KraName
 $blob = Get-ZipEntry $exe $Target
+$src  = $ExeName
+if (-not $blob -and (Test-Path $kra)) {
+    $blob = Get-ZipEntry $kra $Target
+    $src  = $KraName
+}
+if (-not $blob) {
+    Fail "取不到 $Target（$ExeName 和 $KraName 里都没有）。`n游戏又改打包了？请把游戏目录截图发给作者。"
+}
 if ($blob.Length -lt 3 -or $blob[0] -ne 0x1B -or $blob[1] -ne 0x4C -or $blob[2] -ne 0x4A) {
     Fail '取出的不是本游戏需要的代码 —— 游戏版本变了？'
 }
-Say "  取出成功：$($blob.Length) 字节"
+Say "  取出成功：$($blob.Length) 字节（来源：$src）"
 
 $payload = [IO.File]::ReadAllBytes($payloadSrc)
 $shadow  = [IO.File]::ReadAllBytes($shadowSrc)
